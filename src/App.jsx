@@ -89,32 +89,45 @@ export default function App() {
     setMatches(newMatches)
     setRound(roundNumber)
 
-    // Persist: increment bench_count for benched; update last_played_round for playing
-    const playingIds = playing.map(p=>p.id)
-    const benchedIds = benched.map(p=>p.id)
 
-    if (playingIds.length) {
-      const { error } = await supabase.from('players')
-        .update({ last_played_round: roundNumber })
-        .in('id', playingIds)
-      if (error) console.error('update playing failed', error)
-    }
+// 3) persist bench_count / last_played_round via Netlify function
+const updates = []
 
-    if (benchedIds.length) {
-      // we need current bench_count; easiest is to patch each (batched is more advanced)
-      const updates = benched.map(b => ({
-        id: b.id,
-        bench_count: (b.bench_count || 0) + 1
-      }))
-      for (const u of updates) {
-        const { error } = await supabase.from('players').update({ bench_count: u.bench_count }).eq('id', u.id)
-        if (error) console.error('bench update failed', error)
-      }
-    }
+// For each benched player, increment bench_count by 1
+for (const b of benched) {
+  updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 })
+}
 
-    // Refresh local state
-    const { data } = await supabase.from('players').select('*').order('name')
-    setPlayers(data || [])
+// For each player who played, stamp the round number
+for (const p of playing) {
+  updates.push({ id: p.id, last_played_round: roundNumber })
+}
+
+if (updates.length) {
+  try {
+    const res = await fetch('/.netlify/functions/players', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates }),
+    })
+    const out = await res.json()
+    if (!res.ok) throw new Error(out.message || 'Failed to persist round updates')
+  } catch (e) {
+    console.error(e)
+    alert('Failed to save round updates: ' + (e.message || String(e)))
+  }
+}
+
+// 4) refresh local state from server (optional but recommended)
+try {
+  const ref = await fetch('/.netlify/functions/players', { method: 'GET' })
+  const fresh = await ref.json()
+  if (!ref.ok) throw new Error(fresh.message || 'Failed to refresh players')
+  setPlayers(Array.isArray(fresh) ? fresh : [])
+} catch (e) {
+  console.error('Refresh after persist failed:', e)
+  // not fatal for UI
+}
   }
 
   // Timer control

@@ -27,10 +27,7 @@ export const handler = async (event) => {
 
     if (method === 'GET') {
       // List players
-      const { data, error } = await supabase
-        .from('players')
-        .select('*')
-        .order('name', { ascending: true })
+      const { data, error } = await supabase.from('players').select('*').order('name', { ascending: true })
       if (error) throw error
       return { statusCode: 200, headers, body: JSON.stringify(data) }
     }
