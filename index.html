@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Badminton Club Night</title>
+    <style>
+      :root { --male-bg:#add8e6; --male-fg:#002b7f; --female-bg:#ffc0cb; --female-fg:#b0005a; }
+      * { box-sizing: border-box; }
+      body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#0b1020; color:#e9eef6; }
+      header { display:flex; gap:1rem; align-items:center; padding:12px 16px; border-bottom:1px solid #1f2742; position:sticky; top:0; background:#0b1020; z-index:10;}
+      .title { font-weight:700; font-size:20px; letter-spacing:0.3px; }
+      .timer { margin-left:auto; font-variant-numeric:tabular-nums; background:#0f1630; padding:6px 10px; border:1px solid #233058; border-radius:8px; }
+    </style>
+  </head>
+  <body>
+    <!-- Header stays static; React binds to these buttons by id -->
+    <header>
+      <div class="title">🏸 Badminton Club Night</div>
+      <div class="controls" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button id="startBtn">Start Night</button>
+        <button id="pauseBtn">Pause</button>
+        <button id="resumeBtn">Resume</button>
+        <button id="endBtn">End Night</button>
+        <button id="nextBtn">Next Round</button>
+      </div>
+      <div class="timer"><span id="timerText">12:00</span></div>
+    </header>
+
+    <!-- 🔑 This is what was missing: React mounts here -->
+    <div id="root"></div>
+
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
