@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTime, selectPlayersForRound, buildMatchesFrom16 } from './logic'
 
-// ---------- localStorage helpers
+// -------------------- localStorage helpers
 const LS = {
   getRound() { return clampInt(localStorage.getItem('flo.roundMinutes'), 12, 3, 40) },
   setRound(v) { localStorage.setItem('flo.roundMinutes', String(v)) },
@@ -21,7 +21,7 @@ function clampFloat(raw, def, min, max) {
   return def
 }
 
-// ---------- SIMPLE BEEP uses current volume (ref)
+// -------------------- Beeper (uses current volume)
 function useBeep(volumeRef) {
   const ctxRef = useRef(null)
   const ensure = () => {
@@ -43,7 +43,7 @@ function useBeep(volumeRef) {
   return { beep }
 }
 
-// ---------- API (Netlify function)
+// -------------------- API (Netlify function)
 const API = {
   async listPlayers() {
     const res = await fetch('/.netlify/functions/players', { method: 'GET' })
@@ -94,7 +94,7 @@ const API = {
   },
 }
 
-// ---------- robust chunked updater (public)
+// -------------------- public chunked persistence (bench counts / last played)
 async function saveUpdatesPublic(updates) {
   if (!updates?.length) return { ok: true }
   const CHUNK = 25
@@ -118,30 +118,41 @@ async function saveUpdatesPublic(updates) {
 }
 
 export default function App() {
+  // --------- data
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
+
+  // --------- session UI state
+  const [ui, setUi] = useState('home') // 'home' | 'session'
+  const [matches, setMatches] = useState([])
   const [round, setRound] = useState(0)
   const [timeLeft, setTimeLeft] = useState(LS.getRound() * 60)
   const [running, setRunning] = useState(false)
-  const [matches, setMatches] = useState([])
 
-  // settings (existing)
+  // settings
   const [roundMinutes, setRoundMinutes] = useState(LS.getRound())
   const [warnSeconds, setWarnSeconds] = useState(LS.getWarn())
   const [volume, setVolume] = useState(LS.getVol())
-  const volumeRef = useRef(volume)
-  useEffect(()=>{ volumeRef.current = volume }, [volume])
+  const [showSettings, setShowSettings] = useState(false)
 
   // admin
   const [adminKey, setAdminKey] = useState(sessionStorage.getItem('adminKey') || '')
   const isAdmin = !!adminKey
+
+  // session stats (for rundown)
+  const [showRundown, setShowRundown] = useState(false)
+  const [rundown, setRundown] = useState({ rounds: 0, plays: {}, benches: {}, history: [] })
+
+  // helpers
+  const volumeRef = useRef(volume)
+  useEffect(() => { volumeRef.current = volume }, [volume])
 
   const timerRef = useRef(null)
   const lastRoundBenched = useRef(new Set())
   const teammateHistory = useRef(new Map())
   const { beep } = useBeep(volumeRef)
 
-  // ---------- LOAD / REFRESH
+  // --------- load players
   const refreshPlayers = async () => {
     const data = await API.listPlayers()
     const safe = (data || []).map(p => ({
@@ -155,7 +166,6 @@ export default function App() {
     }))
     setPlayers(safe)
   }
-
   useEffect(() => {
     (async () => {
       try {
@@ -172,7 +182,7 @@ export default function App() {
   const present = useMemo(() => players.filter(p => p.is_present), [players])
   const notPresent = useMemo(() => players.filter(p => !p.is_present), [players])
 
-  // ---------- TOGGLE PRESENCE (double-click)
+  // --------- presence toggle (double-click)
   const togglePresence = async (p) => {
     const newVal = !p.is_present
     try {
@@ -184,43 +194,46 @@ export default function App() {
     }
   }
 
-  // ---------- BUILD NEXT ROUND (select 16 fairly → 4 balanced courts → persist)
+  // --------- build next round + persist + update stats
   const buildNextRound = async () => {
-    if (present.length < 4) {
-      alert('Not enough players present.')
-      return
-    }
-    const roundNumber = round + 1
+    if (present.length < 4) { alert('Not enough players present.'); return }
 
-    // 1) select who plays + who benches
+    const roundNumber = round + 1
     const { playing, benched } = selectPlayersForRound(present, roundNumber, lastRoundBenched.current)
     lastRoundBenched.current = new Set(benched.map(b => b.id))
 
-    // 2) make balanced matches
     const newMatches = buildMatchesFrom16(playing, teammateHistory.current)
     setMatches(newMatches)
     setRound(roundNumber)
 
-    // 3) persist bench_count / last_played_round via Netlify function (public)
+    // Persist public fields
     const updates = []
     for (const b of benched) updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 })
     for (const p of playing) updates.push({ id: p.id, last_played_round: roundNumber })
-    try {
-      await saveUpdatesPublic(updates)
-    } catch (e) {
-      console.error(e)
-      alert('Failed to save round updates: ' + (e.message || String(e)))
-    }
+    try { await saveUpdatesPublic(updates) } catch (e) { console.error(e); alert('Failed to save round updates: ' + (e.message || String(e))) }
 
-    // 4) refresh local state from server
-    try {
-      await refreshPlayers()
-    } catch (e) {
-      console.error(e)
-    }
+    // Refresh roster snapshot (optional)
+    try { await refreshPlayers() } catch {}
+
+    // Session stats in-memory
+    setRundown(prev => {
+      const plays = { ...prev.plays }
+      const benches = { ...prev.benches }
+      for (const p of playing) plays[p.id] = (plays[p.id] || 0) + 1
+      for (const b of benched) benches[b.id] = (benches[b.id] || 0) + 1
+      const history = [...prev.history, {
+        round: roundNumber,
+        matches: newMatches.map(m => ({
+          court: m.court,
+          team1: m.team1.map(x => x.id),
+          team2: m.team2.map(x => x.id),
+        }))
+      }]
+      return { rounds: roundNumber, plays, benches, history }
+    })
   }
 
-  // ---------- TIMER CONTROL
+  // --------- timer controls
   const startTimerInternal = () => {
     clearInterval(timerRef.current)
     setTimeLeft(roundMinutes * 60)
@@ -228,10 +241,10 @@ export default function App() {
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         const next = prev - 1
-        if (next === warnSeconds) beep(1200, 320) // warning
+        if (next === warnSeconds) beep(1200, 320)
         if (next <= 0) {
           clearInterval(timerRef.current)
-          beep(500, 700)                 // round end
+          beep(500, 700)
           setRunning(false)
           setTimeout(async () => {
             await buildNextRound()
@@ -243,50 +256,46 @@ export default function App() {
       })
     }, 1000)
   }
-  const handleStart  = async () => {
-    if (present.length < 16) {
-      const ok = confirm(`Only ${present.length} present. Proceed anyway?`)
-      if (!ok) return
+
+  // Buttons logic
+  const onStartNight = () => {
+    setUi('session')
+  }
+  const onResume = async () => {
+    // if no active matches, create a round and start timer
+    if (matches.length === 0) {
+      await buildNextRound()
+      startTimerInternal()
+    } else if (!running && timeLeft > 0) {
+      startTimerInternal()
     }
+  }
+  const onPause = () => { if (running) { clearInterval(timerRef.current); setRunning(false) } }
+  const onNextRound = async () => {
+    clearInterval(timerRef.current)
+    setRunning(false)
     await buildNextRound()
     startTimerInternal()
   }
-  const handlePause  = () => { if (running) { clearInterval(timerRef.current); setRunning(false) } }
-  const handleResume = () => { if (!running && timeLeft > 0) { startTimerInternal() } }
-  const handleEnd    = () => { clearInterval(timerRef.current); setRunning(false); setTimeLeft(roundMinutes*60); setMatches([]); setRound(0) }
-  const handleNext   = async () => { clearInterval(timerRef.current); setRunning(false); await buildNextRound(); startTimerInternal() }
+  const onEndNight = () => {
+    clearInterval(timerRef.current)
+    setRunning(false)
+    // open rundown
+    setShowRundown(true)
+  }
+  const closeRundown = () => {
+    // reset session
+    setShowRundown(false)
+    setUi('home')
+    setMatches([])
+    setRound(0)
+    setTimeLeft(roundMinutes * 60)
+    setRundown({ rounds: 0, plays: {}, benches: {}, history: [] })
+    lastRoundBenched.current = new Set()
+    teammateHistory.current = new Map()
+  }
 
-  // bind header buttons (outside React root)
-  useEffect(() => {
-    const s = document.getElementById('startBtn')
-    const p = document.getElementById('pauseBtn')
-    const r = document.getElementById('resumeBtn')
-    const e = document.getElementById('endBtn')
-    const n = document.getElementById('nextBtn')
-    const settingsBtn = document.getElementById('settingsBtn')
-    s.onclick = handleStart
-    p.onclick = handlePause
-    r.onclick = handleResume
-    e.onclick = handleEnd
-    n.onclick = handleNext
-    settingsBtn.onclick = () => {
-      const mins = prompt('Round length (minutes):', String(LS.getRound()))
-      if (mins !== null) { const v = clampInt(mins, LS.getRound(), 3, 40); setRoundMinutes(v); LS.setRound(v); if (!running) setTimeLeft(v*60) }
-      const warn = prompt('Warning beep at (seconds left):', String(LS.getWarn()))
-      if (warn !== null) { const v2 = clampInt(warn, LS.getWarn(), 5, 120); setWarnSeconds(v2) ; LS.setWarn(v2) }
-      const vol = prompt('Volume 0..1:', String(LS.getVol()))
-      if (vol !== null) { const v3 = clampFloat(vol, LS.getVol(), 0, 1); setVolume(v3); LS.setVol(v3) }
-    }
-    return () => { s.onclick = p.onclick = r.onclick = e.onclick = n.onclick = settingsBtn.onclick = null }
-  }, [present, timeLeft, running])
-
-  // keep timer text fresh
-  useEffect(() => {
-    const el = document.getElementById('timerText')
-    if (el) el.textContent = formatTime(timeLeft)
-  }, [timeLeft])
-
-  // ---------- ADMIN ACTIONS
+  // --------- admin
   const adminLogin = () => {
     const key = prompt('Enter admin key:')
     if (!key) return
@@ -300,23 +309,56 @@ export default function App() {
     alert('Admin mode disabled')
   }
 
-  // --- AdminPanel keeps its own draft state so inputs don't lose focus
+  if (loading) return <div style={{ padding: 16 }}>Loading…</div>
+
+  // --------- render helpers
+  const personRow = (p) => {
+    const pill = p.gender === 'F' ? 'female' : 'male'
+    return (
+      <div key={p.id} className="person" onDoubleClick={() => togglePresence(p)} title="Double-click to toggle" style={styles.person}>
+        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+          <span className={`pill ${pill}`} style={{...styles.pill, ...(p.gender==='F'?styles.femalePill:styles.malePill)}}>{p.gender}</span>
+          <span>{p.name}</span>
+        </div>
+        <div style={styles.level}>Lvl {p.skill_level}</div>
+      </div>
+    )
+  }
+
+  const Court = ({ m }) => {
+    const tag = (pl) => {
+      const pill = pl.gender === 'F' ? 'female' : 'male'
+      return (
+        <div className="tag" key={pl.id} style={styles.tag}>
+          <span className={`pill ${pill}`} style={{...styles.pillSmall, ...(pl.gender==='F'?styles.femalePill:styles.malePill)}}>{pl.gender}</span>
+          {pl.name} (L{pl.skill_level})
+        </div>
+      )
+    }
+    return (
+      <div className="court" style={styles.court}>
+        <h3 style={styles.courtTitle}>Court {m.court}</h3>
+        <div className="team" style={styles.team}>{m.team1.map(tag)}</div>
+        <div className="avg"  style={styles.avg}>Avg: {m.avg1.toFixed(1)}</div>
+        <div className="net"  style={styles.net}></div>
+        <div className="team" style={styles.team}>{m.team2.map(tag)}</div>
+        <div className="avg"  style={styles.avg}>Avg: {m.avg2.toFixed(1)}</div>
+      </div>
+    )
+  }
+
+  // --------- Admin panel with per-row drafts (from previous version)
   const AdminPanel = () => {
     const [drafts, setDrafts] = useState({})
-
-    // Initialize/refresh drafts whenever players change
     useEffect(() => {
       const m = {}
-      for (const p of players) {
-        m[p.id] = { name: p.name, gender: p.gender, skill_level: p.skill_level }
-      }
+      for (const p of players) m[p.id] = { name: p.name, gender: p.gender, skill_level: p.skill_level }
       setDrafts(m)
     }, [players])
 
     const onDraftChange = (id, field, value) => {
       setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
     }
-
     const addPlayer = async (e) => {
       e.preventDefault()
       const form = e.target
@@ -328,30 +370,19 @@ export default function App() {
         await API.upsert([{ name, gender, skill_level: skill, is_present: false, bench_count: 0, last_played_round: 0 }], adminKey)
         form.reset()
         await refreshPlayers()
-      } catch (err) {
-        alert(err.message || String(err))
-      }
+      } catch (err) { alert(err.message || String(err)) }
     }
-
     const saveRow = async (id) => {
       const d = drafts[id]
       if (!d) return
       try {
         await API.patch([{ id, name: d.name, gender: d.gender, skill_level: clampInt(d.skill_level, 3, 1, 10) }], adminKey)
         await refreshPlayers()
-      } catch (e) {
-        alert(e.message || String(e))
-      }
+      } catch (e) { alert(e.message || String(e)) }
     }
-
     const deleteRow = async (id) => {
       if (!confirm('Delete this player?')) return
-      try {
-        await API.remove([id], adminKey)
-        await refreshPlayers()
-      } catch (e) {
-        alert(e.message || String(e))
-      }
+      try { await API.remove([id], adminKey); await refreshPlayers() } catch (e) { alert(e.message || String(e)) }
     }
 
     return (
@@ -394,31 +425,18 @@ export default function App() {
                     return (
                       <tr key={p.id}>
                         <td style={styles.td}>
-                          <input
-                            value={d.name}
-                            onChange={e=>onDraftChange(p.id, 'name', e.target.value)}
-                            style={styles.input}
-                          />
+                          <input value={d.name} onChange={e=>onDraftChange(p.id, 'name', e.target.value)} style={styles.input}/>
                         </td>
                         <td style={styles.td}>
-                          <select
-                            value={d.gender}
-                            onChange={e=>onDraftChange(p.id, 'gender', e.target.value)}
-                            style={styles.input}
-                          >
+                          <select value={d.gender} onChange={e=>onDraftChange(p.id, 'gender', e.target.value)} style={styles.input}>
                             <option value="M">M</option>
                             <option value="F">F</option>
                           </select>
                         </td>
                         <td style={styles.td}>
-                          <input
-                            type="number"
-                            min="1"
-                            max="10"
-                            value={d.skill_level}
+                          <input type="number" min="1" max="10" value={d.skill_level}
                             onChange={e=>onDraftChange(p.id, 'skill_level', clampInt(e.target.value, d.skill_level, 1, 10))}
-                            style={styles.input}
-                          />
+                            style={styles.input}/>
                         </td>
                         <td style={styles.td} align="center">{p.is_present ? 'Yes' : 'No'}</td>
                         <td style={styles.td} align="center">{p.bench_count}</td>
@@ -441,85 +459,161 @@ export default function App() {
     )
   }
 
-  if (loading) return <div style={{ padding: 16 }}>Loading…</div>
-
-  // ---------- RENDER HELPERS
-  const personRow = (p) => {
-    const pill = p.gender === 'F' ? 'female' : 'male'
-    return (
-      <div key={p.id} className="person" onDoubleClick={() => togglePresence(p)} title="Double-click to toggle" style={styles.person}>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <span className={`pill ${pill}`} style={{...styles.pill, ...(p.gender==='F'?styles.femalePill:styles.malePill)}}>{p.gender}</span>
-          <span>{p.name}</span>
+  // --------- Settings Panel (one place)
+  const SettingsPanel = () => (
+    <div style={styles.modalBackdrop}>
+      <div style={styles.modal}>
+        <h3 style={{ marginTop:0 }}>Settings</h3>
+        <div style={{ display:'grid', gap:12 }}>
+          <label style={styles.settingRow}>
+            <span>Round length (minutes)</span>
+            <input type="number" min={3} max={40} value={roundMinutes}
+              onChange={e=>setRoundMinutes(clampInt(e.target.value, roundMinutes, 3, 40))}
+              style={styles.input}/>
+          </label>
+          <label style={styles.settingRow}>
+            <span>Warning beep at (seconds left)</span>
+            <input type="number" min={5} max={120} value={warnSeconds}
+              onChange={e=>setWarnSeconds(clampInt(e.target.value, warnSeconds, 5, 120))}
+              style={styles.input}/>
+          </label>
+          <label style={styles.settingRow}>
+            <span>Volume (0–1)</span>
+            <input type="number" step="0.05" min={0} max={1} value={volume}
+              onChange={e=>setVolume(clampFloat(e.target.value, volume, 0, 1))}
+              style={styles.input}/>
+          </label>
         </div>
-        <div style={styles.level}>Lvl {p.skill_level}</div>
+        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:16 }}>
+          <button className="btn" onClick={()=>{ LS.setRound(roundMinutes); LS.setWarn(warnSeconds); LS.setVol(volume); setTimeLeft(roundMinutes*60); setShowSettings(false) }}>Save</button>
+          <button className="btn" onClick={()=>setShowSettings(false)}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+
+  // --------- Rundown modal
+  const RundownModal = () => {
+    // compute top/low stats
+    const entries = players.map(p => ({
+      id: p.id, name: p.name, played: rundown.plays[p.id] || 0, benched: rundown.benches[p.id] || 0
+    }))
+    const maxPlayed = Math.max(0, ...entries.map(e => e.played))
+    const minPlayed = Math.min(...entries.map(e => e.played), maxPlayed)
+    const most = entries.filter(e => e.played === maxPlayed && maxPlayed > 0)
+    const least = entries.filter(e => e.played === minPlayed)
+
+    return (
+      <div style={styles.modalBackdrop}>
+        <div style={styles.modal}>
+          <h3 style={{ marginTop:0 }}>Session Rundown</h3>
+          <p>Total rounds played: <b>{rundown.rounds}</b></p>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+            <div>
+              <h4 style={{ margin:'8px 0'}}>Most Played</h4>
+              {most.length === 0 ? <div style={{opacity:0.8}}>—</div> :
+                most.map(e => <div key={e.id}>{e.name} — {e.played} rounds</div>)}
+            </div>
+            <div>
+              <h4 style={{ margin:'8px 0'}}>Least Played</h4>
+              {least.length === 0 ? <div style={{opacity:0.8}}>—</div> :
+                least.map(e => <div key={e.id}>{e.name} — {e.played} rounds</div>)}
+            </div>
+          </div>
+
+          <h4 style={{ margin:'12px 0'}}>All Players</h4>
+          <div style={{ maxHeight:240, overflow:'auto', border:'1px solid #233058', borderRadius:8, padding:8 }}>
+            {entries
+              .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
+              .map(e => (
+                <div key={e.id} style={{ display:'flex', justifyContent:'space-between', padding:'4px 2px' }}>
+                  <span>{e.name}</span>
+                  <span>Played: {e.played} • Benched: {e.benched}</span>
+                </div>
+              ))}
+          </div>
+
+          <div style={{ display:'flex', justifyContent:'flex-end', marginTop:12 }}>
+            <button className="btn" onClick={closeRundown}>Close</button>
+          </div>
+        </div>
       </div>
     )
   }
 
-  const Court = ({ m }) => {
-    const tag = (pl) => {
-      const pill = pl.gender === 'F' ? 'female' : 'male'
-      return (
-        <div className="tag" key={pl.id} style={styles.tag}>
-          <span className={`pill ${pill}`} style={{...styles.pillSmall, ...(pl.gender==='F'?styles.femalePill:styles.malePill)}}>{pl.gender}</span>
-          {pl.name} (L{pl.skill_level})
-        </div>
-      )
-    }
-    return (
-      <div className="court" style={styles.court}>
-        <h3 style={styles.courtTitle}>Court {m.court}</h3>
-        <div className="team" style={styles.team}>{m.team1.map(tag)}</div>
-        <div className="avg"  style={styles.avg}>Avg: {m.avg1.toFixed(1)}</div>
-        <div className="net"  style={styles.net}></div>
-        <div className="team" style={styles.team}>{m.team2.map(tag)}</div>
-        <div className="avg"  style={styles.avg}>Avg: {m.avg2.toFixed(1)}</div>
+  // --------- UI: Home toolbar
+  const Toolbar = () => (
+    <div style={styles.toolbar}>
+      <button className="btn" onClick={onStartNight}>Start Night</button>
+      <button className="btn" onClick={onPause}>Pause</button>
+      <button className="btn" onClick={onResume}>Resume</button>
+      <button className="btn" onClick={onEndNight}>End Night</button>
+      <button className="btn" onClick={onNextRound}>Next Round</button>
+      {isAdmin
+        ? <button className="btn" onClick={adminLogout}>Admin (On)</button>
+        : <button className="btn" onClick={adminLogin}>Admin</button>}
+      <button className="btn" onClick={()=>setShowSettings(true)}>Settings</button>
+      <div style={{ marginLeft:'auto', fontWeight:600 }}>
+        {ui === 'session' ? `Round ${round || '–'} • ${formatTime(timeLeft)}` : 'Not running'}
       </div>
-    )
-  }
+    </div>
+  )
 
+  // --------- Render
   return (
     <div style={{ padding: 16 }}>
-      <div style={{ marginBottom: 8, fontSize: 16 }}>
-        Round: <b>{round === 0 ? '–' : round}</b> &nbsp;•&nbsp;
-        Length: <b>{LS.getRound()}m</b> &nbsp;•&nbsp;
-        Warn at: <b>{LS.getWarn()}s</b> &nbsp;•&nbsp;
-        Volume: <b>{Math.round(volume*100)}%</b> &nbsp;•&nbsp;
-        {isAdmin ? <b>Admin Mode</b> : <button className="btn" onClick={adminLogin}>Admin</button>}
-      </div>
+      <Toolbar />
 
-      {/* Lists */}
-      <div className="lists" style={styles.lists}>
-        <div className="listCol" style={styles.listCol}>
-          <div style={styles.listHeader}>All Players <span style={styles.countBadge}>{notPresent.length}</span></div>
-          <div id="allList" className="list" style={styles.listBox}>
-            {notPresent.map(personRow)}
-          </div>
+      {ui === 'home' && (
+        <div style={{ marginTop: 24, opacity: 0.9 }}>
+          <h2>Welcome to Badminton Club Night</h2>
+          <p>Use <b>Start Night</b> to begin check-in and matchmaking. You can open <b>Settings</b> or <b>Admin</b> any time.</p>
         </div>
-        <div className="listCol" style={styles.listCol}>
-          <div style={styles.listHeader}>Present Today <span style={styles.countBadge}>{present.length}</span></div>
-          <div id="presentList" className="list" style={styles.listBox}>
-            {present.map(personRow)}
+      )}
+
+      {ui === 'session' && (
+        <>
+          {/* Courts at the top */}
+          <div id="courts" className="courts" style={styles.courts}>
+            {matches.map(m => <Court key={m.court} m={m} />)}
           </div>
-        </div>
-      </div>
 
-      <div style={{ height: 12 }}></div>
+          <div style={{ height: 12 }}></div>
 
-      {/* Courts */}
-      <div id="courts" className="courts" style={styles.courts}>
-        {matches.map(m => <Court key={m.court} m={m} />)}
-      </div>
+          {/* Lists below courts */}
+          <div className="lists" style={styles.lists}>
+            <div className="listCol" style={styles.listCol}>
+              <div style={styles.listHeader}>All Players <span style={styles.countBadge}>{notPresent.length}</span></div>
+              <div id="allList" className="list" style={styles.listBox}>
+                {notPresent.map(personRow)}
+              </div>
+            </div>
+            <div className="listCol" style={styles.listCol}>
+              <div style={styles.listHeader}>Present Today <span style={styles.countBadge}>{present.length}</span></div>
+              <div id="presentList" className="list" style={styles.listBox}>
+                {present.map(personRow)}
+              </div>
+            </div>
+          </div>
 
-      {/* Admin panel with drafts */}
-      <AdminPanel />
+          {/* Admin panel (visible when Admin mode on) */}
+          <AdminPanel />
+        </>
+      )}
+
+      {showSettings && <SettingsPanel />}
+      {showRundown && <RundownModal />}
     </div>
   )
 }
 
-// ---------- inline styles
+// -------------------- styles
 const styles = {
+  toolbar: {
+    display:'flex', gap:8, alignItems:'center', flexWrap:'wrap',
+    padding:'8px 10px', border:'1px solid #233058', borderRadius:12, background:'#0f1630'
+  },
+
   lists: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 },
   listCol: {},
   listHeader: { fontWeight:700, marginBottom:6, display:'flex', alignItems:'center', gap:8 },
@@ -533,7 +627,7 @@ const styles = {
   femalePill: { background:'#ffc0cb', color:'#b0005a' },
   level: { opacity:0.9, fontVariantNumeric:'tabular-nums' },
 
-  courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16 },
+  courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16, marginTop:16 },
   court: { background:'#0f1630', border: '1px solid #233058', borderRadius:16, padding:12 },
   courtTitle: { margin:'0 0 8px 0' },
   team: { display:'flex', flexDirection:'column', gap:6 },
@@ -541,8 +635,19 @@ const styles = {
   avg: { margin:'6px 0 10px', opacity:0.85 },
   net: { height:2, background:'#2d3f7a', margin:'6px 0', opacity:0.7, borderRadius:2 },
 
-  // admin
+  // admin / inputs
   input: { width:'100%', background:'#0b132b', color:'#e6ebff', border:'1px solid #1f2742', borderRadius:8, padding:'6px 8px' },
   th: { textAlign:'left', padding:'8px', borderBottom:'1px solid #233058' },
   td: { padding:'6px 8px', borderBottom:'1px solid #1a2242' },
+
+  // modal
+  modalBackdrop: {
+    position:'fixed', inset:0, background:'rgba(0,0,0,0.6)',
+    display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000
+  },
+  modal: {
+    width:'min(680px, 92vw)', background:'#0f1630', border:'1px solid #233058',
+    borderRadius:12, padding:16
+  },
+  settingRow: { display:'grid', gridTemplateColumns:'1fr 200px', alignItems:'center', gap:12 },
 }
