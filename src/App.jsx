@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTime, selectPlayersForRound, buildMatchesFrom16 } from './logic'
+import './App.css' // ← new polished styles
 
 // -------------------- localStorage helpers
 const LS = {
@@ -129,7 +130,7 @@ export default function App() {
 
   // Data
   const [players, setPlayers] = useState([])
-  const [loading, setLoading] = useState(!isDisplay) // display skips fetch
+  const [loading, setLoading] = useState(!isDisplay)
 
   // Session state
   const [matches, setMatches] = useState([])
@@ -161,12 +162,11 @@ export default function App() {
   const { beep } = useBeep(volumeRef)
 
   // ---------- DISPLAY SYNC ----------
-  const lastTsRef = useRef(0)               // display: last accepted payload ts
+  const lastTsRef = useRef(0)
   const [displaySeen, setDisplaySeen] = useState(false)
   const [displayPresentCount, setDisplayPresentCount] = useState(0)
 
   const pushDisplay = (override) => {
-    // Build payload from controller
     const payload = {
       kind: 'flo-display-v1',
       ts: Date.now(),
@@ -186,13 +186,11 @@ export default function App() {
     LS.setDisplay(payload)
   }
 
-  // Display tab: passive listener with guards
   useEffect(() => {
     if (!isDisplay) return
 
     const apply = (payload) => {
       if (!payload || payload.kind !== 'flo-display-v1') return
-      // Only accept newer snapshots
       if (payload.ts && payload.ts <= lastTsRef.current) return
       lastTsRef.current = payload.ts || Date.now()
 
@@ -202,12 +200,11 @@ export default function App() {
       setTimeLeft(Number(payload.timeLeft || 0))
       setDisplayPresentCount(Number(payload.presentCount || 0))
 
-      // If session active and incoming matches empty, keep previous matches (prevents flicker)
       if (Array.isArray(payload.matches)) {
         const incoming = payload.matches
         const activeSession = !!payload.running || (payload.round || 0) > 0
         if (activeSession && incoming.length === 0) {
-          // ignore
+          // ignore clearing during active session
         } else {
           setMatches(incoming.map(m => ({
             court: m.court,
@@ -219,10 +216,8 @@ export default function App() {
       }
     }
 
-    // initial snapshot
     apply(LS.getDisplay())
 
-    // updates via storage
     const onStorage = (e) => {
       if (e.key === 'flo.display.payload') {
         try { apply(JSON.parse(e.newValue)) } catch {}
@@ -230,7 +225,6 @@ export default function App() {
     }
     window.addEventListener('storage', onStorage)
 
-    // soft polling (in case storage event is missed)
     const poll = setInterval(() => {
       const snap = LS.getDisplay()
       if (snap) apply(snap)
@@ -267,7 +261,7 @@ export default function App() {
   const present = useMemo(() => players.filter(p => p.is_present), [players])
   const notPresent = useMemo(() => players.filter(p => !p.is_present), [players])
 
-  // ---------- Presence toggle (controller)
+  // ---------- Presence toggle
   const togglePresence = async (p) => {
     const newVal = !p.is_present
     try {
@@ -291,13 +285,11 @@ export default function App() {
     setMatches(newMatches)
     setRound(roundNumber)
 
-    // Persist public fields
     const updates = []
     for (const b of benched) updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 })
     for (const pl of playing) updates.push({ id: pl.id, last_played_round: roundNumber })
     try { await saveUpdatesPublic(updates) } catch (e) { console.error(e); alert('Failed to save round updates: ' + (e.message || String(e))) }
 
-    // Refresh snapshot (optional)
     try {
       const data = await API.listPlayers()
       setPlayers((data||[]).map(p=>({
@@ -306,7 +298,6 @@ export default function App() {
       })))
     } catch {}
 
-    // Stats
     setRundown(prev => {
       const plays = { ...prev.plays }
       const benches = { ...prev.benches }
@@ -323,11 +314,10 @@ export default function App() {
       return { rounds: roundNumber, plays, benches, history }
     })
 
-    // Push to display immediately
     pushDisplay({ round: roundNumber, matches: newMatches, presentCount: present.length })
   }
 
-  // ---------- Timer controls (controller)
+  // ---------- Timer controls
   const startTimerInternal = () => {
     clearInterval(timerRef.current)
     setTimeLeft(roundMinutes * 60)
@@ -355,7 +345,7 @@ export default function App() {
     }, 1000)
   }
 
-  // ---------- Toolbar actions (controller)
+  // ---------- Toolbar actions
   const onStartNight = () => setUi('session')
 
   const onResume = async () => {
@@ -411,9 +401,8 @@ export default function App() {
     alert('Admin mode disabled')
   }
 
-  // ---------- Open Display (controller)
+  // ---------- Open Display
   const openDisplay = () => {
-    // Push a snapshot before opening
     pushDisplay({ presentCount: players.filter(p => p.is_present).length })
     const url = new URL(window.location.href)
     url.searchParams.set('display', '1')
@@ -434,18 +423,26 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [isDisplay])
 
-  if (!isDisplay && loading) return <div style={{ padding: 16 }}>Loading…</div>
+  if (!isDisplay && loading) {
+    return (
+      <div className="page">
+        <div className="loader">Loading…</div>
+      </div>
+    )
+  }
+
+  const isWarn = running && timeLeft <= warnSeconds
 
   // ---------- Render helpers
   const personRow = (p) => {
     const pill = p.gender === 'F' ? 'female' : 'male'
     return (
-      <div key={p.id} className="person" onDoubleClick={() => togglePresence(p)} title="Double-click to toggle" style={styles.person}>
-        <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-          <span className={`pill ${pill}`} style={{...styles.pill, ...(p.gender==='F'?styles.femalePill:styles.malePill)}}>{p.gender}</span>
-          <span>{p.name}</span>
+      <div key={p.id} className="person fade-in" onDoubleClick={() => togglePresence(p)} title="Double-click to toggle">
+        <div className="person-left">
+          <span className={`pill ${pill}`}>{p.gender}</span>
+          <span className="person-name">{p.name}</span>
         </div>
-        <div style={styles.level}>Lvl {p.skill_level}</div>
+        <div className="level">Lvl {p.skill_level}</div>
       </div>
     )
   }
@@ -454,25 +451,28 @@ export default function App() {
     const tag = (pl) => {
       const pill = pl.gender === 'F' ? 'female' : 'male'
       return (
-        <div className="tag" key={pl.id} style={{...styles.tag, ...(large?styles.tagLarge:{})}}>
-          <span className={`pill ${pill}`} style={{...styles.pillSmall, ...(pl.gender==='F'?styles.femalePill:styles.malePill)}}>{pl.gender}</span>
-          {pl.name} (L{pl.skill_level})
+        <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
+          <span className={`pill sm ${pill}`}>{pl.gender}</span>
+          {pl.name} <span className="muted">(L{pl.skill_level})</span>
         </div>
       )
     }
     return (
-      <div className="court" style={{...styles.court, ...(large?styles.courtLarge:{})}}>
-        <h3 style={{...styles.courtTitle, ...(large?styles.courtTitleLarge:{})}}>Court {m.court}</h3>
-        <div className="team" style={styles.team}>{m.team1.map(tag)}</div>
-        <div className="avg"  style={{...styles.avg, ...(large?styles.avgLarge:{})}}>Avg: {m.avg1?.toFixed?.(1) ?? m.avg1}</div>
-        <div className="net"  style={styles.net}></div>
-        <div className="team" style={styles.team}>{m.team2.map(tag)}</div>
-        <div className="avg"  style={{...styles.avg, ...(large?styles.avgLarge:{})}}>Avg: {m.avg2?.toFixed?.(1) ?? m.avg2}</div>
+      <div className={`court glass ${large ? 'lg' : ''}`}>
+        <div className="court-head">
+          <h3>🏸 Court {m.court}</h3>
+          <div className="avg-pair">
+            <span className="avg">Team 1 Avg: <b>{m.avg1?.toFixed?.(1) ?? m.avg1}</b></span>
+            <span className="avg">Team 2 Avg: <b>{m.avg2?.toFixed?.(1) ?? m.avg2}</b></span>
+          </div>
+        </div>
+        <div className="team">{m.team1.map(tag)}</div>
+        <div className="net"></div>
+        <div className="team">{m.team2.map(tag)}</div>
       </div>
     )
   }
 
-  // Admin Panel with draft buffers
   const AdminPanel = () => {
     const [drafts, setDrafts] = useState({})
     useEffect(() => {
@@ -525,9 +525,9 @@ export default function App() {
     }
 
     return (
-      <div style={{ marginTop: 18, padding: 12, border: '1px solid #233058', borderRadius: 12, background: '#0f1630' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3 style={{ margin: 0 }}>Admin Controls</h3>
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Admin Controls</h3>
           {isAdmin
             ? <button className="btn" onClick={adminLogout}>Exit Admin</button>
             : <button className="btn" onClick={adminLogin}>Admin</button>}
@@ -535,27 +535,27 @@ export default function App() {
 
         {isAdmin && (
           <>
-            <form onSubmit={addPlayer} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr auto', gap:8, marginTop:12 }}>
-              <input name="name" placeholder="Name" required style={styles.input}/>
-              <select name="gender" defaultValue="M" style={styles.input}>
+            <form onSubmit={addPlayer} className="grid add-form">
+              <input name="name" placeholder="Name" required className="input"/>
+              <select name="gender" defaultValue="M" className="input">
                 <option value="M">M</option>
                 <option value="F">F</option>
               </select>
-              <input name="skill" type="number" min="1" max="10" defaultValue="3" style={styles.input}/>
+              <input name="skill" type="number" min="1" max="10" defaultValue="3" className="input"/>
               <button className="btn" type="submit">Add</button>
             </form>
 
-            <div style={{ marginTop: 12, overflowX: 'auto' }}>
-              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+            <div className="table-wrap">
+              <table className="table">
                 <thead>
                   <tr>
-                    <th style={styles.th}>Name</th>
-                    <th style={styles.th}>Gender</th>
-                    <th style={styles.th}>Level</th>
-                    <th style={styles.th}>Present</th>
-                    <th style={styles.th}>Bench</th>
-                    <th style={styles.th}>Last Round</th>
-                    <th style={styles.th}>Actions</th>
+                    <th>Name</th>
+                    <th>Gender</th>
+                    <th>Level</th>
+                    <th>Present</th>
+                    <th>Bench</th>
+                    <th>Last Round</th>
+                    <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -563,27 +563,25 @@ export default function App() {
                     const d = drafts[p.id] || { name: p.name, gender: p.gender, skill_level: p.skill_level }
                     return (
                       <tr key={p.id}>
-                        <td style={styles.td}>
-                          <input value={d.name} onChange={e=>onDraftChange(p.id, 'name', e.target.value)} style={styles.input}/>
-                        </td>
-                        <td style={styles.td}>
-                          <select value={d.gender} onChange={e=>onDraftChange(p.id, 'gender', e.target.value)} style={styles.input}>
+                        <td><input value={d.name} onChange={e=>onDraftChange(p.id, 'name', e.target.value)} className="input"/></td>
+                        <td>
+                          <select value={d.gender} onChange={e=>onDraftChange(p.id, 'gender', e.target.value)} className="input">
                             <option value="M">M</option>
                             <option value="F">F</option>
                           </select>
                         </td>
-                        <td style={styles.td}>
+                        <td>
                           <input type="number" min="1" max="10" value={d.skill_level}
                             onChange={e=>onDraftChange(p.id, 'skill_level', clampInt(e.target.value, d.skill_level, 1, 10))}
-                            style={styles.input}/>
+                            className="input"/>
                         </td>
-                        <td style={styles.td} align="center">{p.is_present ? 'Yes' : 'No'}</td>
-                        <td style={styles.td} align="center">{p.bench_count}</td>
-                        <td style={styles.td} align="center">{p.last_played_round}</td>
-                        <td style={styles.td}>
-                          <div style={{ display:'flex', gap:8 }}>
+                        <td className="center">{p.is_present ? 'Yes' : 'No'}</td>
+                        <td className="center">{p.bench_count}</td>
+                        <td className="center">{p.last_played_round}</td>
+                        <td>
+                          <div className="row-actions">
                             <button className="btn" onClick={()=>saveRow(p.id)}>Save</button>
-                            <button className="btn" onClick={()=>deleteRow(p.id)}>Delete</button>
+                            <button className="btn danger" onClick={()=>deleteRow(p.id)}>Delete</button>
                           </div>
                         </td>
                       </tr>
@@ -598,40 +596,38 @@ export default function App() {
     )
   }
 
-  // Settings Panel
   const SettingsPanel = () => (
-    <div style={styles.modalBackdrop}>
-      <div style={styles.modal}>
-        <h3 style={{ marginTop:0 }}>Settings</h3>
-        <div style={{ display:'grid', gap:12 }}>
-          <label style={styles.settingRow}>
+    <div className="modal-backdrop">
+      <div className="modal glass">
+        <h3>Settings</h3>
+        <div className="settings-grid">
+          <label className="setting">
             <span>Round length (minutes)</span>
             <input type="number" min={3} max={40} value={roundMinutes}
               onChange={e=>setRoundMinutes(clampInt(e.target.value, roundMinutes, 3, 40))}
-              style={styles.input}/>
+              className="input"/>
           </label>
-          <label style={styles.settingRow}>
+          <label className="setting">
             <span>Warning beep at (seconds left)</span>
             <input type="number" min={5} max={120} value={warnSeconds}
               onChange={e=>setWarnSeconds(clampInt(e.target.value, warnSeconds, 5, 120))}
-              style={styles.input}/>
+              className="input"/>
           </label>
-          <label style={styles.settingRow}>
+          <label className="setting">
             <span>Volume (0–1)</span>
             <input type="number" step="0.05" min={0} max={1} value={volume}
               onChange={e=>setVolume(clampFloat(e.target.value, volume, 0, 1))}
-              style={styles.input}/>
+              className="input"/>
           </label>
         </div>
-        <div style={{ display:'flex', justifyContent:'flex-end', gap:8, marginTop:16 }}>
+        <div className="right mt-16">
           <button className="btn" onClick={()=>{ LS.setRound(roundMinutes); LS.setWarn(warnSeconds); LS.setVol(volume); setTimeLeft(roundMinutes*60); setShowSettings(false) }}>Save</button>
-          <button className="btn" onClick={()=>setShowSettings(false)}>Close</button>
+          <button className="btn ghost" onClick={()=>setShowSettings(false)}>Close</button>
         </div>
       </div>
     </div>
   )
 
-  // Rundown modal
   const RundownModal = () => {
     const entries = players.map(p => ({
       id: p.id, name: p.name, played: rundown.plays[p.id] || 0, benched: rundown.benches[p.id] || 0
@@ -642,23 +638,23 @@ export default function App() {
     const least = entries.filter(e => e.played === minPlayed)
 
     return (
-      <div style={styles.modalBackdrop}>
-        <div style={styles.modal}>
-          <h3 style={{ marginTop:0 }}>Session Rundown</h3>
+      <div className="modal-backdrop">
+        <div className="modal glass">
+          <h3>Session Rundown</h3>
           <p>Total rounds played: <b>{rundown.rounds}</b></p>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div className="two-col">
             <div>
-              <h4 style={{ margin:'8px 0'}}>Most Played</h4>
-              {most.length === 0 ? <div style={{opacity:0.8}}>—</div> :
+              <h4>Most Played</h4>
+              {most.length === 0 ? <div className="muted">—</div> :
                 most.map(e => <div key={e.id}>{e.name} — {e.played} rounds</div>)}
             </div>
             <div>
-              <h4 style={{ margin:'8px 0'}}>Least Played</h4>
-              {least.length === 0 ? <div style={{opacity:0.8}}>—</div> :
+              <h4>Least Played</h4>
+              {least.length === 0 ? <div className="muted">—</div> :
                 least.map(e => <div key={e.id}>{e.name} — {e.played} rounds</div>)}
             </div>
           </div>
-          <div style={{ display:'flex', justifyContent:'flex-end', marginTop:12 }}>
+          <div className="right mt-12">
             <button className="btn" onClick={closeRundown}>Close</button>
           </div>
         </div>
@@ -666,46 +662,47 @@ export default function App() {
     )
   }
 
-  // Toolbar
   const Toolbar = () => (
-    <div style={styles.toolbar}>
-      <button className="btn" onClick={onStartNight}>Start Night</button>
-      <button className="btn" onClick={onPause}>Pause</button>
-      <button className="btn" onClick={onResume}>Resume</button>
-      <button className="btn" onClick={onEndNight}>End Night</button>
-      <button className="btn" onClick={onNextRound}>Next Round</button>
-      <button className="btn" onClick={openDisplay}>Open Display</button>
-      {isAdmin
-        ? <button className="btn" onClick={adminLogout}>Admin (On)</button>
-        : <button className="btn" onClick={adminLogin}>Admin</button>}
-      <button className="btn" onClick={()=>setShowSettings(true)}>Settings</button>
-      <div style={{ marginLeft:'auto', fontWeight:600 }}>
-        {ui === 'session' ? `Round ${round || '–'} • ${formatTime(timeLeft)}` : ui === 'display' ? 'Display Mode' : 'Not running'}
+    <div className="toolbar glass">
+      <div className="toolbar-left">
+        <button className="btn primary" onClick={onStartNight}>Start Night</button>
+        <button className="btn" onClick={onPause}>Pause</button>
+        <button className="btn" onClick={onResume}>Resume</button>
+        <button className="btn danger" onClick={onEndNight}>End Night</button>
+        <button className="btn" onClick={onNextRound}>Next Round</button>
+        <button className="btn" onClick={openDisplay}>Open Display</button>
+        {isAdmin
+          ? <button className="btn" onClick={adminLogout}>Admin (On)</button>
+          : <button className="btn" onClick={adminLogin}>Admin</button>}
+        <button className="btn ghost" onClick={()=>setShowSettings(true)}>Settings</button>
+      </div>
+      <div className={`toolbar-right time ${isWarn ? 'warn' : ''}`}>
+        {ui === 'session' ? `Round ${round || '–'} • ${formatTime(timeLeft)}` :
+         ui === 'display' ? 'Display Mode' : 'Not running'}
       </div>
     </div>
   )
 
-  // Display-only view
   const DisplayView = () => {
     return (
-      <div style={styles.displayRoot}>
-        <div style={styles.displayHeader}>
-          <div style={styles.displayTitle}>Badminton Club Night</div>
-          <div style={styles.displayMeta}>
+      <div className="display page">
+        <div className="display-head">
+          <div className="display-title">Badminton Club Night</div>
+          <div className="display-meta">
             <span>Round {round || '–'}</span>
             <span>•</span>
-            <span>{formatTime(timeLeft)}</span>
+            <span className={`bigtime ${isWarn ? 'warn' : ''}`}>{formatTime(timeLeft)}</span>
             <span>•</span>
             <span>{displayPresentCount} present</span>
           </div>
-          <div style={styles.displayHint}>Press <b>F</b> for fullscreen • <b>Esc</b> to exit</div>
+          <div className="display-hint">Press <b>F</b> for fullscreen • <b>Esc</b> to exit</div>
         </div>
 
-        <div style={styles.displayCourts}>
+        <div className="display-courts">
           {!displaySeen
-            ? <div style={{opacity:0.8, fontSize:22, padding:20}}>Waiting for controller…</div>
+            ? <div className="muted p-20">Waiting for controller…</div>
             : (matches.length === 0
-              ? <div style={{opacity:0.8, fontSize:22, padding:20}}>Waiting for matches…</div>
+              ? <div className="muted p-20">Waiting for matches…</div>
               : matches.map(m => <Court key={m.court} m={m} large />)
             )
           }
@@ -714,13 +711,12 @@ export default function App() {
     )
   }
 
-  // ---------- Render
   return (
-    <div style={{ padding: 16 }}>
+    <div className="page">
       <Toolbar />
 
       {ui === 'home' && (
-        <div style={{ marginTop: 24, opacity: 0.9 }}>
+        <div className="welcome fade-in">
           <h2>Welcome to Badminton Club Night</h2>
           <p>Use <b>Start Night</b> to begin check-in and matchmaking. Open <b>Display</b> on a second screen to show courts + timer.</p>
         </div>
@@ -728,30 +724,25 @@ export default function App() {
 
       {ui === 'session' && (
         <>
-          {/* Courts */}
-          <div id="courts" className="courts" style={styles.courts}>
+          <div id="courts" className="courts-grid">
             {matches.map(m => <Court key={m.court} m={m} />)}
           </div>
 
-          <div style={{ height: 12 }}></div>
-
-          {/* Lists */}
-          <div className="lists" style={styles.lists}>
-            <div className="listCol" style={styles.listCol}>
-              <div style={styles.listHeader}>All Players <span style={styles.countBadge}>{notPresent.length}</span></div>
-              <div id="allList" className="list" style={styles.listBox}>
+          <div className="lists-grid">
+            <div className="list-col">
+              <div className="list-head">All Players <span className="badge">{notPresent.length}</span></div>
+              <div id="allList" className="list-box glass">
                 {notPresent.map(personRow)}
               </div>
             </div>
-            <div className="listCol" style={styles.listCol}>
-              <div style={styles.listHeader}>Present Today <span style={styles.countBadge}>{present.length}</span></div>
-              <div id="presentList" className="list" style={styles.listBox}>
+            <div className="list-col">
+              <div className="list-head">Present Today <span className="badge">{present.length}</span></div>
+              <div id="presentList" className="list-box glass">
                 {present.map(personRow)}
               </div>
             </div>
           </div>
 
-          {/* Admin */}
           <AdminPanel />
         </>
       )}
@@ -769,61 +760,4 @@ function getInitialUi() {
   const url = new URL(window.location.href)
   if (url.searchParams.get('display') === '1') return 'display'
   return 'home'
-}
-
-// -------------------- styles
-const styles = {
-  toolbar: {
-    display:'flex', gap:8, alignItems:'center', flexWrap:'wrap',
-    padding:'8px 10px', border:'1px solid #233058', borderRadius:12, background:'#0f1630'
-  },
-
-  lists: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 },
-  listCol: {},
-  listHeader: { fontWeight:700, marginBottom:6, display:'flex', alignItems:'center', gap:8 },
-  countBadge: { background:'#1e2a55', border:'1px solid #2d3f7a', borderRadius:999, padding:'2px 8px', fontSize:12 },
-  listBox: { minHeight:240, border:'1px solid #233058', borderRadius:12, padding:8, background:'#0f1630' },
-
-  person: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 10px', borderRadius:10, margin:'6px 2px', background:'#0b132b', border:'1px solid #1f2742', cursor:'pointer' },
-  pill: { minWidth:22, textAlign:'center', padding:'2px 6px', borderRadius:999, fontSize:12, fontWeight:700, color:'#001b44', background:'#bcdcff' },
-  pillSmall: { minWidth:18, textAlign:'center', padding:'1px 6px', borderRadius:999, fontSize:11, fontWeight:700, color:'#001b44', background:'#bcdcff', marginRight:6 },
-  malePill: { background:'#add8e6', color:'#002b7f' },
-  femalePill: { background:'#ffc0cb', color:'#b0005a' },
-  level: { opacity:0.9, fontVariantNumeric:'tabular-nums' },
-
-  courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16, marginTop:16 },
-  court: { background:'#0f1630', border: '1px solid #233058', borderRadius:16, padding:12 },
-  courtLarge: { padding:16 },
-  courtTitle: { margin:'0 0 8px 0' },
-  courtTitleLarge: { fontSize:26, marginBottom:10 },
-  team: { display:'flex', flexDirection:'column', gap:6 },
-  tag: { background:'#0b132b', border:'1px solid #1f2742', borderRadius:10, padding:'6px 8px', display:'inline-flex', alignItems:'center', gap:6, width:'fit-content' },
-  tagLarge: { fontSize:18, padding:'8px 10px' },
-  avg: { margin:'6px 0 10px', opacity:0.85 },
-  avgLarge: { fontSize:16 },
-  net: { height:2, background:'#2d3f7a', margin:'6px 0', opacity:0.7, borderRadius:2 },
-
-  // inputs
-  input: { width:'100%', background:'#0b132b', color:'#e6ebff', border:'1px solid #1f2742', borderRadius:8, padding:'6px 8px' },
-  th: { textAlign:'left', padding:'8px', borderBottom:'1px solid #233058' },
-  td: { padding:'6px 8px', borderBottom:'1px solid #1a2242' },
-
-  // modals
-  modalBackdrop: {
-    position:'fixed', inset:0, background:'rgba(0,0,0,0.6)',
-    display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000
-  },
-  modal: {
-    width:'min(680px, 92vw)', background:'#0f1630', border:'1px solid #233058',
-    borderRadius:12, padding:16
-  },
-  settingRow: { display:'grid', gridTemplateColumns:'1fr 200px', alignItems:'center', gap:12 },
-
-  // display mode
-  displayRoot: { padding: 12 },
-  displayHeader: { textAlign:'center', marginTop:6, marginBottom:12 },
-  displayTitle: { fontSize:28, fontWeight:800, letterSpacing:0.2 },
-  displayMeta: { marginTop:4, display:'flex', gap:12, justifyContent:'center', fontSize:18, opacity:0.95 },
-  displayHint: { marginTop:4, fontSize:12, opacity:0.7 },
-  displayCourts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(320px, 1fr))', gap:16, marginTop:8 },
 }
