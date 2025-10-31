@@ -10,7 +10,6 @@ const LS = {
   getVol()   { return clampFloat(localStorage.getItem('flo.volume'), 0.3, 0, 1) },
   setVol(v)  { localStorage.setItem('flo.volume', String(v)) },
 
-  // Display-mode payload
   setDisplay(payload) { localStorage.setItem('flo.display.payload', JSON.stringify(payload)) },
   getDisplay() {
     try { return JSON.parse(localStorage.getItem('flo.display.payload') || 'null') } catch { return null }
@@ -100,7 +99,7 @@ const API = {
   },
 }
 
-// -------------------- public chunked persistence
+// -------------------- public chunked persistence (no admin key needed)
 async function saveUpdatesPublic(updates) {
   if (!updates?.length) return { ok: true }
   const CHUNK = 25
@@ -130,7 +129,7 @@ export default function App() {
 
   // Data
   const [players, setPlayers] = useState([])
-  const [loading, setLoading] = useState(!isDisplay) // display mode skips initial fetch
+  const [loading, setLoading] = useState(!isDisplay) // display skips fetch
 
   // Session state
   const [matches, setMatches] = useState([])
@@ -148,7 +147,7 @@ export default function App() {
   const [adminKey, setAdminKey] = useState(sessionStorage.getItem('adminKey') || '')
   const isAdmin = !!adminKey
 
-  // Session rundown
+  // Rundown
   const [showRundown, setShowRundown] = useState(false)
   const [rundown, setRundown] = useState({ rounds: 0, plays: {}, benches: {}, history: [] })
 
@@ -162,12 +161,15 @@ export default function App() {
   const { beep } = useBeep(volumeRef)
 
   // ---------- DISPLAY SYNC ----------
+  const lastTsRef = useRef(0)               // display: last accepted payload ts
+  const [displaySeen, setDisplaySeen] = useState(false)
+  const [displayPresentCount, setDisplayPresentCount] = useState(0)
+
   const pushDisplay = (override) => {
-    // Build payload from current control-state
+    // Build payload from controller
     const payload = {
       kind: 'flo-display-v1',
       ts: Date.now(),
-      ui: 'display',
       round,
       running,
       timeLeft,
@@ -184,33 +186,43 @@ export default function App() {
     LS.setDisplay(payload)
   }
 
-  // Display tab: passive listener only
-  const [displaySeen, setDisplaySeen] = useState(false) // has this tab received any payload yet?
+  // Display tab: passive listener with guards
   useEffect(() => {
     if (!isDisplay) return
 
     const apply = (payload) => {
       if (!payload || payload.kind !== 'flo-display-v1') return
+      // Only accept newer snapshots
+      if (payload.ts && payload.ts <= lastTsRef.current) return
+      lastTsRef.current = payload.ts || Date.now()
+
       setDisplaySeen(true)
-      // Only update the fields we display
       setRound(payload.round || 0)
       setRunning(!!payload.running)
       setTimeLeft(Number(payload.timeLeft || 0))
+      setDisplayPresentCount(Number(payload.presentCount || 0))
+
+      // If session active and incoming matches empty, keep previous matches (prevents flicker)
       if (Array.isArray(payload.matches)) {
-        // Accept matches from control; NEVER overwrite with empty unless explicitly sent
-        setMatches(payload.matches.map(m => ({
-          court: m.court,
-          avg1: m.avg1, avg2: m.avg2,
-          team1: m.team1 || [],
-          team2: m.team2 || [],
-        })))
+        const incoming = payload.matches
+        const activeSession = !!payload.running || (payload.round || 0) > 0
+        if (activeSession && incoming.length === 0) {
+          // ignore
+        } else {
+          setMatches(incoming.map(m => ({
+            court: m.court,
+            avg1: m.avg1, avg2: m.avg2,
+            team1: m.team1 || [],
+            team2: m.team2 || [],
+          })))
+        }
       }
     }
 
     // initial snapshot
     apply(LS.getDisplay())
 
-    // react to updates (different tab writes)
+    // updates via storage
     const onStorage = (e) => {
       if (e.key === 'flo.display.payload') {
         try { apply(JSON.parse(e.newValue)) } catch {}
@@ -218,15 +230,18 @@ export default function App() {
     }
     window.addEventListener('storage', onStorage)
 
-    // also poll every 800ms to be extra robust
-    const poll = setInterval(() => apply(LS.getDisplay()), 800)
+    // soft polling (in case storage event is missed)
+    const poll = setInterval(() => {
+      const snap = LS.getDisplay()
+      if (snap) apply(snap)
+    }, 800)
 
     return () => { window.removeEventListener('storage', onStorage); clearInterval(poll) }
   }, [isDisplay])
 
   // ---------- LOAD PLAYERS (controller only)
   useEffect(() => {
-    if (isDisplay) return // display window does not fetch or change state that could stomp display
+    if (isDisplay) return
     (async () => {
       try {
         const data = await API.listPlayers()
@@ -279,14 +294,17 @@ export default function App() {
     // Persist public fields
     const updates = []
     for (const b of benched) updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 })
-    for (const p of playing) updates.push({ id: p.id, last_played_round: roundNumber })
+    for (const pl of playing) updates.push({ id: pl.id, last_played_round: roundNumber })
     try { await saveUpdatesPublic(updates) } catch (e) { console.error(e); alert('Failed to save round updates: ' + (e.message || String(e))) }
 
     // Refresh snapshot (optional)
-    try { const data = await API.listPlayers(); setPlayers((data||[]).map(p=>({
-      id:p.id,name:p.name,gender:p.gender||'M',skill_level:Number(p.skill_level||1),
-      is_present:!!p.is_present,bench_count:Number(p.bench_count||0),last_played_round:Number(p.last_played_round||0)
-    }))) } catch {}
+    try {
+      const data = await API.listPlayers()
+      setPlayers((data||[]).map(p=>({
+        id:p.id,name:p.name,gender:p.gender||'M',skill_level:Number(p.skill_level||1),
+        is_present:!!p.is_present,bench_count:Number(p.bench_count||0),last_played_round:Number(p.last_played_round||0)
+      })))
+    } catch {}
 
     // Stats
     setRundown(prev => {
@@ -305,8 +323,8 @@ export default function App() {
       return { rounds: roundNumber, plays, benches, history }
     })
 
-    // Push to display immediately (include matches explicitly)
-    pushDisplay({ round: roundNumber, matches: newMatches })
+    // Push to display immediately
+    pushDisplay({ round: roundNumber, matches: newMatches, presentCount: present.length })
   }
 
   // ---------- Timer controls (controller)
@@ -314,18 +332,18 @@ export default function App() {
     clearInterval(timerRef.current)
     setTimeLeft(roundMinutes * 60)
     setRunning(true)
-    pushDisplay({ timeLeft: roundMinutes * 60, running: true }) // immediate
+    pushDisplay({ timeLeft: roundMinutes * 60, running: true, presentCount: present.length })
 
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         const next = prev - 1
-        pushDisplay({ timeLeft: next, running: true }) // tick update
+        pushDisplay({ timeLeft: next, running: true, presentCount: present.length })
         if (next === warnSeconds) beep(1200, 320)
         if (next <= 0) {
           clearInterval(timerRef.current)
           beep(500, 700)
           setRunning(false)
-          pushDisplay({ timeLeft: 0, running: false })
+          pushDisplay({ timeLeft: 0, running: false, presentCount: present.length })
           setTimeout(async () => {
             await buildNextRound()
             startTimerInternal()
@@ -352,7 +370,7 @@ export default function App() {
     if (running) {
       clearInterval(timerRef.current)
       setRunning(false)
-      pushDisplay({ running: false })
+      pushDisplay({ running: false, presentCount: present.length })
     }
   }
   const onNextRound = async () => {
@@ -364,7 +382,7 @@ export default function App() {
   const onEndNight = () => {
     clearInterval(timerRef.current)
     setRunning(false)
-    pushDisplay({ running: false })
+    pushDisplay({ running: false, matches: [], timeLeft: 0, round: 0, presentCount: present.length })
     setShowRundown(true)
   }
   const closeRundown = () => {
@@ -376,7 +394,7 @@ export default function App() {
     setRundown({ rounds: 0, plays: {}, benches: {}, history: [] })
     lastRoundBenched.current = new Set()
     teammateHistory.current = new Map()
-    pushDisplay({ round: 0, matches: [], timeLeft: 0, running: false })
+    pushDisplay({ round: 0, matches: [], timeLeft: 0, running: false, presentCount: present.length })
   }
 
   // ---------- Admin
@@ -395,8 +413,8 @@ export default function App() {
 
   // ---------- Open Display (controller)
   const openDisplay = () => {
-    // Ensure we push a fresh snapshot before opening
-    pushDisplay({})
+    // Push a snapshot before opening
+    pushDisplay({ presentCount: players.filter(p => p.is_present).length })
     const url = new URL(window.location.href)
     url.searchParams.set('display', '1')
     window.open(url.toString(), '_blank', 'noopener,noreferrer')
@@ -454,7 +472,7 @@ export default function App() {
     )
   }
 
-  // Admin Panel (draft-buffer editing)
+  // Admin Panel with draft buffers
   const AdminPanel = () => {
     const [drafts, setDrafts] = useState({})
     useEffect(() => {
@@ -476,7 +494,6 @@ export default function App() {
       try {
         await API.upsert([{ name, gender, skill_level: skill, is_present: false, bench_count: 0, last_played_round: 0 }], adminKey)
         form.reset()
-        // refresh
         const data = await API.listPlayers()
         setPlayers((data||[]).map(p=>({
           id:p.id,name:p.name,gender:p.gender||'M',skill_level:Number(p.skill_level||1),
@@ -670,7 +687,6 @@ export default function App() {
 
   // Display-only view
   const DisplayView = () => {
-    const presentCount = players.filter(p => p.is_present).length // controller pushes count; this is just cosmetic
     return (
       <div style={styles.displayRoot}>
         <div style={styles.displayHeader}>
@@ -680,7 +696,7 @@ export default function App() {
             <span>•</span>
             <span>{formatTime(timeLeft)}</span>
             <span>•</span>
-            <span>{presentCount} present</span>
+            <span>{displayPresentCount} present</span>
           </div>
           <div style={styles.displayHint}>Press <b>F</b> for fullscreen • <b>Esc</b> to exit</div>
         </div>
