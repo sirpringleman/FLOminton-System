@@ -9,6 +9,12 @@ const LS = {
   setWarn(v) { localStorage.setItem('flo.warnSeconds', String(v)) },
   getVol()   { return clampFloat(localStorage.getItem('flo.volume'), 0.3, 0, 1) },
   setVol(v)  { localStorage.setItem('flo.volume', String(v)) },
+
+  // display sync payload
+  setDisplay(payload) { localStorage.setItem('flo.display.payload', JSON.stringify(payload)) },
+  getDisplay() {
+    try { return JSON.parse(localStorage.getItem('flo.display.payload') || 'null') } catch { return null }
+  },
 }
 function clampInt(raw, def, min, max) {
   const n = parseInt(raw ?? '', 10)
@@ -122,8 +128,10 @@ export default function App() {
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // --------- session UI state
-  const [ui, setUi] = useState('home') // 'home' | 'session'
+  // --------- screens: 'home' | 'session' | 'display'
+  const [ui, setUi] = useState(getInitialUi())
+
+  // session state
   const [matches, setMatches] = useState([])
   const [round, setRound] = useState(0)
   const [timeLeft, setTimeLeft] = useState(LS.getRound() * 60)
@@ -152,7 +160,56 @@ export default function App() {
   const teammateHistory = useRef(new Map())
   const { beep } = useBeep(volumeRef)
 
-  // --------- load players
+  // DISPLAY mode sync: when in control screen, we push; when in display screen, we pull
+  const pushDisplay = (override) => {
+    const payload = {
+      kind: 'flo-display-v1',
+      ts: Date.now(),
+      ui: 'display',
+      round,
+      running,
+      timeLeft,
+      roundMinutes,
+      presentCount: players.filter(p => p.is_present).length,
+      matches: matches.map(m => ({
+        court: m.court,
+        avg1: m.avg1, avg2: m.avg2,
+        team1: m.team1.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
+        team2: m.team2.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
+      })),
+      ...override
+    }
+    LS.setDisplay(payload)
+  }
+
+  // When this tab is in DISPLAY mode: poll localStorage + react to storage events
+  useEffect(() => {
+    if (ui !== 'display') return
+    const apply = (payload) => {
+      if (!payload || payload.kind !== 'flo-display-v1') return
+      setRound(payload.round || 0)
+      setRunning(!!payload.running)
+      setTimeLeft(Number(payload.timeLeft || 0))
+      setMatches((payload.matches || []).map(m => ({
+        court: m.court,
+        avg1: m.avg1, avg2: m.avg2,
+        team1: m.team1, team2: m.team2
+      })))
+    }
+    // initial
+    apply(LS.getDisplay())
+
+    const onStorage = (e) => {
+      if (e.key === 'flo.display.payload') {
+        try { apply(JSON.parse(e.newValue)) } catch {}
+      }
+    }
+    const poll = setInterval(() => apply(LS.getDisplay()), 1000)
+    window.addEventListener('storage', onStorage)
+    return () => { window.removeEventListener('storage', onStorage); clearInterval(poll) }
+  }, [ui])
+
+  // -------------------- load players
   const refreshPlayers = async () => {
     const data = await API.listPlayers()
     const safe = (data || []).map(p => ({
@@ -182,7 +239,7 @@ export default function App() {
   const present = useMemo(() => players.filter(p => p.is_present), [players])
   const notPresent = useMemo(() => players.filter(p => !p.is_present), [players])
 
-  // --------- presence toggle (double-click)
+  // -------------------- presence toggle (double-click)
   const togglePresence = async (p) => {
     const newVal = !p.is_present
     try {
@@ -194,7 +251,7 @@ export default function App() {
     }
   }
 
-  // --------- build next round + persist + update stats
+  // -------------------- build next round + persist + update stats + push display
   const buildNextRound = async () => {
     if (present.length < 4) { alert('Not enough players present.'); return }
 
@@ -231,21 +288,32 @@ export default function App() {
       }]
       return { rounds: roundNumber, plays, benches, history }
     })
+
+    // push snapshot for Display Mode
+    pushDisplay({ round: roundNumber, matches: newMatches, timeLeft })
   }
 
-  // --------- timer controls
+  // -------------------- timer controls
   const startTimerInternal = () => {
     clearInterval(timerRef.current)
     setTimeLeft(roundMinutes * 60)
     setRunning(true)
+
+    // immediately push a fresh payload (so display shows the reset)
+    pushDisplay({ timeLeft: roundMinutes * 60, running: true })
+
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         const next = prev - 1
+        // push to display every tick (cheap, localStorage write)
+        pushDisplay({ timeLeft: next, running: true })
+
         if (next === warnSeconds) beep(1200, 320)
         if (next <= 0) {
           clearInterval(timerRef.current)
           beep(500, 700)
           setRunning(false)
+          pushDisplay({ timeLeft: 0, running: false })
           setTimeout(async () => {
             await buildNextRound()
             startTimerInternal()
@@ -257,12 +325,11 @@ export default function App() {
     }, 1000)
   }
 
-  // Buttons logic
+  // -------------------- buttons logic
   const onStartNight = () => {
     setUi('session')
   }
   const onResume = async () => {
-    // if no active matches, create a round and start timer
     if (matches.length === 0) {
       await buildNextRound()
       startTimerInternal()
@@ -270,7 +337,13 @@ export default function App() {
       startTimerInternal()
     }
   }
-  const onPause = () => { if (running) { clearInterval(timerRef.current); setRunning(false) } }
+  const onPause = () => {
+    if (running) {
+      clearInterval(timerRef.current)
+      setRunning(false)
+      pushDisplay({ running: false })
+    }
+  }
   const onNextRound = async () => {
     clearInterval(timerRef.current)
     setRunning(false)
@@ -280,11 +353,10 @@ export default function App() {
   const onEndNight = () => {
     clearInterval(timerRef.current)
     setRunning(false)
-    // open rundown
+    pushDisplay({ running: false })
     setShowRundown(true)
   }
   const closeRundown = () => {
-    // reset session
     setShowRundown(false)
     setUi('home')
     setMatches([])
@@ -293,9 +365,10 @@ export default function App() {
     setRundown({ rounds: 0, plays: {}, benches: {}, history: [] })
     lastRoundBenched.current = new Set()
     teammateHistory.current = new Map()
+    pushDisplay({ round: 0, matches: [], timeLeft: 0, running: false })
   }
 
-  // --------- admin
+  // -------------------- admin
   const adminLogin = () => {
     const key = prompt('Enter admin key:')
     if (!key) return
@@ -309,9 +382,30 @@ export default function App() {
     alert('Admin mode disabled')
   }
 
+  // -------------------- open display window
+  const openDisplay = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('display', '1')
+    window.open(url.toString(), '_blank', 'noopener,noreferrer')
+  }
+
+  // keyboard: F toggles fullscreen in display, ESC exits
+  useEffect(() => {
+    if (ui !== 'display') return
+    const onKey = (e) => {
+      if (e.key === 'f' || e.key === 'F') {
+        const el = document.documentElement
+        if (!document.fullscreenElement) el.requestFullscreen?.()
+        else document.exitFullscreen?.()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ui])
+
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>
 
-  // --------- render helpers
+  // -------------------- render helpers
   const personRow = (p) => {
     const pill = p.gender === 'F' ? 'female' : 'male'
     return (
@@ -325,29 +419,29 @@ export default function App() {
     )
   }
 
-  const Court = ({ m }) => {
+  const Court = ({ m, large=false }) => {
     const tag = (pl) => {
       const pill = pl.gender === 'F' ? 'female' : 'male'
       return (
-        <div className="tag" key={pl.id} style={styles.tag}>
+        <div className="tag" key={pl.id} style={{...styles.tag, ...(large?styles.tagLarge:{})}}>
           <span className={`pill ${pill}`} style={{...styles.pillSmall, ...(pl.gender==='F'?styles.femalePill:styles.malePill)}}>{pl.gender}</span>
           {pl.name} (L{pl.skill_level})
         </div>
       )
     }
     return (
-      <div className="court" style={styles.court}>
-        <h3 style={styles.courtTitle}>Court {m.court}</h3>
+      <div className="court" style={{...styles.court, ...(large?styles.courtLarge:{})}}>
+        <h3 style={{...styles.courtTitle, ...(large?styles.courtTitleLarge:{})}}>Court {m.court}</h3>
         <div className="team" style={styles.team}>{m.team1.map(tag)}</div>
-        <div className="avg"  style={styles.avg}>Avg: {m.avg1.toFixed(1)}</div>
+        <div className="avg"  style={{...styles.avg, ...(large?styles.avgLarge:{})}}>Avg: {m.avg1.toFixed(1)}</div>
         <div className="net"  style={styles.net}></div>
         <div className="team" style={styles.team}>{m.team2.map(tag)}</div>
-        <div className="avg"  style={styles.avg}>Avg: {m.avg2.toFixed(1)}</div>
+        <div className="avg"  style={{...styles.avg, ...(large?styles.avgLarge:{})}}>Avg: {m.avg2.toFixed(1)}</div>
       </div>
     )
   }
 
-  // --------- Admin panel with per-row drafts (from previous version)
+  // Admin panel with drafts (unchanged from previous)
   const AdminPanel = () => {
     const [drafts, setDrafts] = useState({})
     useEffect(() => {
@@ -356,9 +450,9 @@ export default function App() {
       setDrafts(m)
     }, [players])
 
-    const onDraftChange = (id, field, value) => {
+    const onDraftChange = (id, field, value) =>
       setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
-    }
+
     const addPlayer = async (e) => {
       e.preventDefault()
       const form = e.target
@@ -373,8 +467,7 @@ export default function App() {
       } catch (err) { alert(err.message || String(err)) }
     }
     const saveRow = async (id) => {
-      const d = drafts[id]
-      if (!d) return
+      const d = drafts[id]; if (!d) return
       try {
         await API.patch([{ id, name: d.name, gender: d.gender, skill_level: clampInt(d.skill_level, 3, 1, 10) }], adminKey)
         await refreshPlayers()
@@ -459,7 +552,7 @@ export default function App() {
     )
   }
 
-  // --------- Settings Panel (one place)
+  // Settings Panel
   const SettingsPanel = () => (
     <div style={styles.modalBackdrop}>
       <div style={styles.modal}>
@@ -492,9 +585,8 @@ export default function App() {
     </div>
   )
 
-  // --------- Rundown modal
+  // Rundown modal
   const RundownModal = () => {
-    // compute top/low stats
     const entries = players.map(p => ({
       id: p.id, name: p.name, played: rundown.plays[p.id] || 0, benched: rundown.benches[p.id] || 0
     }))
@@ -520,19 +612,6 @@ export default function App() {
                 least.map(e => <div key={e.id}>{e.name} — {e.played} rounds</div>)}
             </div>
           </div>
-
-          <h4 style={{ margin:'12px 0'}}>All Players</h4>
-          <div style={{ maxHeight:240, overflow:'auto', border:'1px solid #233058', borderRadius:8, padding:8 }}>
-            {entries
-              .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
-              .map(e => (
-                <div key={e.id} style={{ display:'flex', justifyContent:'space-between', padding:'4px 2px' }}>
-                  <span>{e.name}</span>
-                  <span>Played: {e.played} • Benched: {e.benched}</span>
-                </div>
-              ))}
-          </div>
-
           <div style={{ display:'flex', justifyContent:'flex-end', marginTop:12 }}>
             <button className="btn" onClick={closeRundown}>Close</button>
           </div>
@@ -541,7 +620,7 @@ export default function App() {
     )
   }
 
-  // --------- UI: Home toolbar
+  // Toolbar (now includes Open Display)
   const Toolbar = () => (
     <div style={styles.toolbar}>
       <button className="btn" onClick={onStartNight}>Start Night</button>
@@ -549,25 +628,55 @@ export default function App() {
       <button className="btn" onClick={onResume}>Resume</button>
       <button className="btn" onClick={onEndNight}>End Night</button>
       <button className="btn" onClick={onNextRound}>Next Round</button>
+      <button className="btn" onClick={openDisplay}>Open Display</button>
       {isAdmin
         ? <button className="btn" onClick={adminLogout}>Admin (On)</button>
         : <button className="btn" onClick={adminLogin}>Admin</button>}
       <button className="btn" onClick={()=>setShowSettings(true)}>Settings</button>
       <div style={{ marginLeft:'auto', fontWeight:600 }}>
-        {ui === 'session' ? `Round ${round || '–'} • ${formatTime(timeLeft)}` : 'Not running'}
+        {ui === 'session' ? `Round ${round || '–'} • ${formatTime(timeLeft)}` : ui === 'display' ? 'Display Mode' : 'Not running'}
       </div>
     </div>
   )
 
-  // --------- Render
+  // DISPLAY VIEW (purely visual)
+  const DisplayView = () => {
+    const presentCount = players.filter(p => p.is_present).length
+    return (
+      <div style={styles.displayRoot}>
+        <div style={styles.displayHeader}>
+          <div style={styles.displayTitle}>Badminton Club Night</div>
+          <div style={styles.displayMeta}>
+            <span>Round {round || '–'}</span>
+            <span>•</span>
+            <span>{formatTime(timeLeft)}</span>
+            <span>•</span>
+            <span>{presentCount} present</span>
+          </div>
+          <div style={styles.displayHint}>Press <b>F</b> for fullscreen • <b>Esc</b> to exit</div>
+        </div>
+
+        <div style={styles.displayCourts}>
+          {matches.length === 0 ? (
+            <div style={{opacity:0.8, fontSize:22, padding:20}}>Waiting for matches…</div>
+          ) : (
+            matches.map(m => <Court key={m.court} m={m} large />)
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // -------------------- Render
   return (
     <div style={{ padding: 16 }}>
+      {/* If on ?display=1 we still show the toolbar for convenience (can remove if you want absolute clean) */}
       <Toolbar />
 
       {ui === 'home' && (
         <div style={{ marginTop: 24, opacity: 0.9 }}>
           <h2>Welcome to Badminton Club Night</h2>
-          <p>Use <b>Start Night</b> to begin check-in and matchmaking. You can open <b>Settings</b> or <b>Admin</b> any time.</p>
+          <p>Use <b>Start Night</b> to begin check-in and matchmaking. Open <b>Display</b> on a second screen to show courts + timer.</p>
         </div>
       )}
 
@@ -601,10 +710,19 @@ export default function App() {
         </>
       )}
 
+      {ui === 'display' && <DisplayView />}
+
       {showSettings && <SettingsPanel />}
       {showRundown && <RundownModal />}
     </div>
   )
+}
+
+// -------------------- utils
+function getInitialUi() {
+  const url = new URL(window.location.href)
+  if (url.searchParams.get('display') === '1') return 'display'
+  return 'home'
 }
 
 // -------------------- styles
@@ -629,10 +747,14 @@ const styles = {
 
   courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16, marginTop:16 },
   court: { background:'#0f1630', border: '1px solid #233058', borderRadius:16, padding:12 },
+  courtLarge: { padding:16 },
   courtTitle: { margin:'0 0 8px 0' },
+  courtTitleLarge: { fontSize:26, marginBottom:10 },
   team: { display:'flex', flexDirection:'column', gap:6 },
   tag: { background:'#0b132b', border:'1px solid #1f2742', borderRadius:10, padding:'6px 8px', display:'inline-flex', alignItems:'center', gap:6, width:'fit-content' },
+  tagLarge: { fontSize:18, padding:'8px 10px' },
   avg: { margin:'6px 0 10px', opacity:0.85 },
+  avgLarge: { fontSize:16 },
   net: { height:2, background:'#2d3f7a', margin:'6px 0', opacity:0.7, borderRadius:2 },
 
   // admin / inputs
@@ -650,4 +772,12 @@ const styles = {
     borderRadius:12, padding:16
   },
   settingRow: { display:'grid', gridTemplateColumns:'1fr 200px', alignItems:'center', gap:12 },
+
+  // display mode
+  displayRoot: { padding: 12 },
+  displayHeader: { textAlign:'center', marginTop:6, marginBottom:12 },
+  displayTitle: { fontSize:28, fontWeight:800, letterSpacing:0.2 },
+  displayMeta: { marginTop:4, display:'flex', gap:12, justifyContent:'center', fontSize:18, opacity:0.95 },
+  displayHint: { marginTop:4, fontSize:12, opacity:0.7 },
+  displayCourts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(320px, 1fr))', gap:16, marginTop:8 },
 }
