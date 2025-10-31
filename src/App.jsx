@@ -63,6 +63,33 @@ const API = {
   },
 }
 
+// ---------- robust chunked updater
+async function saveUpdates(updates) {
+  if (!updates?.length) return { ok: true }
+
+  const CHUNK = 25
+  for (let i = 0; i < updates.length; i += CHUNK) {
+    const part = updates.slice(i, i + CHUNK)
+    const res = await fetch('/.netlify/functions/players', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates: part }),
+    })
+    let payload
+    const text = await res.text()
+    try { payload = JSON.parse(text) } catch { payload = { message: text } }
+
+    if (!res.ok) {
+      throw new Error(payload?.message || `PATCH failed (${res.status})`)
+    }
+    if (payload && payload.ok === false && payload.errors?.length) {
+      console.warn('Partial update errors:', payload.errors)
+      alert('Some rows failed to save. Check Functions logs for details.')
+    }
+  }
+  return { ok: true }
+}
+
 export default function App() {
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
@@ -148,13 +175,11 @@ export default function App() {
     const updates = []
     for (const b of benched) updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 })
     for (const p of playing) updates.push({ id: p.id, last_played_round: roundNumber })
-    if (updates.length) {
-      try {
-        await API.patch(updates)
-      } catch (e) {
-        console.error(e)
-        alert('Failed to save round updates: ' + (e.message || String(e)))
-      }
+    try {
+      await saveUpdates(updates)
+    } catch (e) {
+      console.error(e)
+      alert('Failed to save round updates: ' + (e.message || String(e)))
     }
 
     // 4) refresh local state from server
@@ -223,56 +248,6 @@ export default function App() {
     if (el) el.textContent = formatTime(timeLeft)
   }, [timeLeft])
 
-  // ---------- SETTINGS UI wiring
-  useEffect(() => {
-    const modal = document.getElementById('settingsModal')
-    const btn   = document.getElementById('settingsBtn')
-    const close = document.getElementById('closeSettings')
-    const mEl   = document.getElementById('roundMinutes')
-    const wEl   = document.getElementById('warnSeconds')
-    const vEl   = document.getElementById('volume')
-
-    // init inputs
-    mEl.value = String(roundMinutes)
-    wEl.value = String(warnSeconds)
-    vEl.value = String(volume)
-
-    const open = () => { modal.style.display = 'flex'; setShowSettings(true) }
-    const hide = () => { modal.style.display = 'none'; setShowSettings(false) }
-
-    btn.addEventListener('click', open)
-    close.addEventListener('click', hide)
-    modal.addEventListener('click', (e) => { if (e.target === modal) hide() })
-
-    // on-change persist + update state
-    const onM = (e) => {
-      const val = clampInt(e.target.value, roundMinutes, 3, 40)
-      setRoundMinutes(val); LS.setRound(val)
-      if (!running) setTimeLeft(val * 60)
-    }
-    const onW = (e) => {
-      const val = clampInt(e.target.value, warnSeconds, 5, 120)
-      setWarnSeconds(val); LS.setWarn(val)
-    }
-    const onV = (e) => {
-      const val = clampFloat(e.target.value, volume, 0, 1)
-      setVolume(val); LS.setVol(val)
-    }
-
-    mEl.addEventListener('input', onM)
-    wEl.addEventListener('input', onW)
-    vEl.addEventListener('input', onV)
-
-    return () => {
-      btn.removeEventListener('click', open)
-      close.removeEventListener('click', hide)
-      modal.removeEventListener('click', hide)
-      mEl.removeEventListener('input', onM)
-      wEl.removeEventListener('input', onW)
-      vEl.removeEventListener('input', onV)
-    }
-  }, [roundMinutes, warnSeconds, volume, running])
-
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>
 
   // ---------- RENDER HELPERS
@@ -315,12 +290,11 @@ export default function App() {
     <div style={{ padding: 16 }}>
       <div style={{ marginBottom: 8, fontSize: 16 }}>
         Round: <b>{round === 0 ? '–' : round}</b> &nbsp;•&nbsp;
-        Length: <b>{roundMinutes}m</b> &nbsp;•&nbsp;
-        Warn at: <b>{warnSeconds}s</b> &nbsp;•&nbsp;
+        Length: <b>{LS.getRound()}m</b> &nbsp;•&nbsp;
+        Warn at: <b>{LS.getWarn()}s</b> &nbsp;•&nbsp;
         Volume: <b>{Math.round(volume*100)}%</b>
       </div>
 
-      {/* Lists with headers */}
       <div className="lists" style={styles.lists}>
         <div className="listCol" style={styles.listCol}>
           <div style={styles.listHeader}>All Players <span style={styles.countBadge}>{notPresent.length}</span></div>
@@ -338,7 +312,6 @@ export default function App() {
 
       <div style={{ height: 12 }}></div>
 
-      {/* Courts */}
       <div id="courts" className="courts" style={styles.courts}>
         {matches.map(m => <Court key={m.court} m={m} />)}
       </div>
