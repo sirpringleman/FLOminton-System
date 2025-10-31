@@ -60,7 +60,6 @@ const API = {
       },
       body: JSON.stringify({ updates }),
     })
-    // attempt JSON, fallback text
     const text = await res.text()
     let data
     try { data = JSON.parse(text) } catch { data = { message: text } }
@@ -301,39 +300,145 @@ export default function App() {
     alert('Admin mode disabled')
   }
 
-  const addPlayer = async (e) => {
-    e.preventDefault()
-    const form = e.target
-    const name = form.name.value.trim()
-    const gender = form.gender.value
-    const skill = clampInt(form.skill.value, 1, 1, 10)
-    if (!name) return alert('Name required')
-    try {
-      await API.upsert([{ name, gender, skill_level: skill, is_present: false, bench_count: 0, last_played_round: 0 }], adminKey)
-      form.reset()
-      await refreshPlayers()
-    } catch (err) {
-      alert(err.message || String(err))
-    }
-  }
+  // --- AdminPanel keeps its own draft state so inputs don't lose focus
+  const AdminPanel = () => {
+    const [drafts, setDrafts] = useState({})
 
-  const saveRow = async (p) => {
-    try {
-      await API.patch([{ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level }], adminKey)
-      await refreshPlayers()
-    } catch (e) {
-      alert(e.message || String(e))
-    }
-  }
+    // Initialize/refresh drafts whenever players change
+    useEffect(() => {
+      const m = {}
+      for (const p of players) {
+        m[p.id] = { name: p.name, gender: p.gender, skill_level: p.skill_level }
+      }
+      setDrafts(m)
+    }, [players])
 
-  const deleteRow = async (id) => {
-    if (!confirm('Delete this player?')) return
-    try {
-      await API.remove([id], adminKey)
-      await refreshPlayers()
-    } catch (e) {
-      alert(e.message || String(e))
+    const onDraftChange = (id, field, value) => {
+      setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }))
     }
+
+    const addPlayer = async (e) => {
+      e.preventDefault()
+      const form = e.target
+      const name = form.name.value.trim()
+      const gender = form.gender.value
+      const skill = clampInt(form.skill.value, 3, 1, 10)
+      if (!name) return alert('Name required')
+      try {
+        await API.upsert([{ name, gender, skill_level: skill, is_present: false, bench_count: 0, last_played_round: 0 }], adminKey)
+        form.reset()
+        await refreshPlayers()
+      } catch (err) {
+        alert(err.message || String(err))
+      }
+    }
+
+    const saveRow = async (id) => {
+      const d = drafts[id]
+      if (!d) return
+      try {
+        await API.patch([{ id, name: d.name, gender: d.gender, skill_level: clampInt(d.skill_level, 3, 1, 10) }], adminKey)
+        await refreshPlayers()
+      } catch (e) {
+        alert(e.message || String(e))
+      }
+    }
+
+    const deleteRow = async (id) => {
+      if (!confirm('Delete this player?')) return
+      try {
+        await API.remove([id], adminKey)
+        await refreshPlayers()
+      } catch (e) {
+        alert(e.message || String(e))
+      }
+    }
+
+    return (
+      <div style={{ marginTop: 18, padding: 12, border: '1px solid #233058', borderRadius: 12, background: '#0f1630' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h3 style={{ margin: 0 }}>Admin Controls</h3>
+          {isAdmin
+            ? <button className="btn" onClick={adminLogout}>Exit Admin</button>
+            : <button className="btn" onClick={adminLogin}>Admin</button>}
+        </div>
+
+        {isAdmin && (
+          <>
+            <form onSubmit={addPlayer} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr auto', gap:8, marginTop:12 }}>
+              <input name="name" placeholder="Name" required style={styles.input}/>
+              <select name="gender" defaultValue="M" style={styles.input}>
+                <option value="M">M</option>
+                <option value="F">F</option>
+              </select>
+              <input name="skill" type="number" min="1" max="10" defaultValue="3" style={styles.input}/>
+              <button className="btn" type="submit">Add</button>
+            </form>
+
+            <div style={{ marginTop: 12, overflowX: 'auto' }}>
+              <table style={{ width:'100%', borderCollapse:'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Name</th>
+                    <th style={styles.th}>Gender</th>
+                    <th style={styles.th}>Level</th>
+                    <th style={styles.th}>Present</th>
+                    <th style={styles.th}>Bench</th>
+                    <th style={styles.th}>Last Round</th>
+                    <th style={styles.th}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {players.map(p => {
+                    const d = drafts[p.id] || { name: p.name, gender: p.gender, skill_level: p.skill_level }
+                    return (
+                      <tr key={p.id}>
+                        <td style={styles.td}>
+                          <input
+                            value={d.name}
+                            onChange={e=>onDraftChange(p.id, 'name', e.target.value)}
+                            style={styles.input}
+                          />
+                        </td>
+                        <td style={styles.td}>
+                          <select
+                            value={d.gender}
+                            onChange={e=>onDraftChange(p.id, 'gender', e.target.value)}
+                            style={styles.input}
+                          >
+                            <option value="M">M</option>
+                            <option value="F">F</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10"
+                            value={d.skill_level}
+                            onChange={e=>onDraftChange(p.id, 'skill_level', clampInt(e.target.value, d.skill_level, 1, 10))}
+                            style={styles.input}
+                          />
+                        </td>
+                        <td style={styles.td} align="center">{p.is_present ? 'Yes' : 'No'}</td>
+                        <td style={styles.td} align="center">{p.bench_count}</td>
+                        <td style={styles.td} align="center">{p.last_played_round}</td>
+                        <td style={styles.td}>
+                          <div style={{ display:'flex', gap:8 }}>
+                            <button className="btn" onClick={()=>saveRow(p.id)}>Save</button>
+                            <button className="btn" onClick={()=>deleteRow(p.id)}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    )
   }
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>
@@ -374,77 +479,6 @@ export default function App() {
     )
   }
 
-  // Admin table editable copy of roster
-  const AdminPanel = () => (
-    <div style={{ marginTop: 18, padding: 12, border: '1px solid #233058', borderRadius: 12, background: '#0f1630' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h3 style={{ margin: 0 }}>Admin Controls</h3>
-        {isAdmin
-          ? <button className="btn" onClick={adminLogout}>Exit Admin</button>
-          : <button className="btn" onClick={adminLogin}>Admin</button>}
-      </div>
-
-      {isAdmin && (
-        <>
-          <form onSubmit={addPlayer} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr auto', gap:8, marginTop:12 }}>
-            <input name="name" placeholder="Name" required style={styles.input}/>
-            <select name="gender" defaultValue="M" style={styles.input}>
-              <option value="M">M</option>
-              <option value="F">F</option>
-            </select>
-            <input name="skill" type="number" min="1" max="10" defaultValue="3" style={styles.input}/>
-            <button className="btn" type="submit">Add</button>
-          </form>
-
-          <div style={{ marginTop: 12, overflowX: 'auto' }}>
-            <table style={{ width:'100%', borderCollapse:'collapse' }}>
-              <thead>
-                <tr>
-                  <th style={styles.th}>Name</th>
-                  <th style={styles.th}>Gender</th>
-                  <th style={styles.th}>Level</th>
-                  <th style={styles.th}>Present</th>
-                  <th style={styles.th}>Bench</th>
-                  <th style={styles.th}>Last Round</th>
-                  <th style={styles.th}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {players.map(p => (
-                  <tr key={p.id}>
-                    <td style={styles.td}>
-                      <input value={p.name} onChange={e=>setPlayers(prev=>prev.map(x=>x.id===p.id?{...x,name:e.target.value}:x))} style={styles.input}/>
-                    </td>
-                    <td style={styles.td}>
-                      <select value={p.gender} onChange={e=>setPlayers(prev=>prev.map(x=>x.id===p.id?{...x,gender:e.target.value}:x))} style={styles.input}>
-                        <option value="M">M</option>
-                        <option value="F">F</option>
-                      </select>
-                    </td>
-                    <td style={styles.td}>
-                      <input type="number" min="1" max="10" value={p.skill_level}
-                        onChange={e=>setPlayers(prev=>prev.map(x=>x.id===p.id?{...x,skill_level:clampInt(e.target.value, p.skill_level, 1, 10)}:x))}
-                        style={styles.input}/>
-                    </td>
-                    <td style={styles.td} align="center">{p.is_present ? 'Yes' : 'No'}</td>
-                    <td style={styles.td} align="center">{p.bench_count}</td>
-                    <td style={styles.td} align="center">{p.last_played_round}</td>
-                    <td style={styles.td}>
-                      <div style={{ display:'flex', gap:8 }}>
-                        <button className="btn" onClick={()=>saveRow(p)}>Save</button>
-                        <button className="btn" onClick={()=>deleteRow(p.id)}>Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-    </div>
-  )
-
   return (
     <div style={{ padding: 16 }}>
       <div style={{ marginBottom: 8, fontSize: 16 }}>
@@ -478,7 +512,7 @@ export default function App() {
         {matches.map(m => <Court key={m.court} m={m} />)}
       </div>
 
-      {/* Admin panel */}
+      {/* Admin panel with drafts */}
       <AdminPanel />
     </div>
   )
@@ -500,7 +534,7 @@ const styles = {
   level: { opacity:0.9, fontVariantNumeric:'tabular-nums' },
 
   courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16 },
-  court: { background: '#0f1630', border: '1px solid #233058', borderRadius:16, padding:12 },
+  court: { background:'#0f1630', border: '1px solid #233058', borderRadius:16, padding:12 },
   courtTitle: { margin:'0 0 8px 0' },
   team: { display:'flex', flexDirection:'column', gap:6 },
   tag: { background:'#0b132b', border:'1px solid #1f2742', borderRadius:10, padding:'6px 8px', display:'inline-flex', alignItems:'center', gap:6, width:'fit-content' },
