@@ -1,21 +1,42 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { formatTime, selectPlayersForRound, buildMatchesFrom16 } from './logic'
 
-// ---------- SIMPLE BEEP (works after first user interaction)
-function useBeep() {
+// ---------- localStorage helpers
+const LS = {
+  getRound() { return clampInt(localStorage.getItem('flo.roundMinutes'), 12, 3, 40) },
+  setRound(v) { localStorage.setItem('flo.roundMinutes', String(v)) },
+  getWarn()  { return clampInt(localStorage.getItem('flo.warnSeconds'), 30, 5, 120) },
+  setWarn(v) { localStorage.setItem('flo.warnSeconds', String(v)) },
+  getVol()   { return clampFloat(localStorage.getItem('flo.volume'), 0.3, 0, 1) },
+  setVol(v)  { localStorage.setItem('flo.volume', String(v)) },
+}
+function clampInt(raw, def, min, max) {
+  const n = parseInt(raw ?? '', 10)
+  if (Number.isFinite(n)) return Math.max(min, Math.min(max, n))
+  return def
+}
+function clampFloat(raw, def, min, max) {
+  const n = parseFloat(raw ?? '')
+  if (Number.isFinite(n)) return Math.max(min, Math.min(max, n))
+  return def
+}
+
+// ---------- SIMPLE BEEP uses current volume (ref)
+function useBeep(volumeRef) {
   const ctxRef = useRef(null)
   const ensure = () => {
     if (!ctxRef.current) ctxRef.current = new (window.AudioContext || window.webkitAudioContext)()
     return ctxRef.current
   }
   const beep = (freq = 800, ms = 250) => {
+    const vol = Math.max(0, Math.min(1, volumeRef.current ?? 0.3))
     const ctx = ensure()
     const o = ctx.createOscillator()
     const g = ctx.createGain()
     o.connect(g); g.connect(ctx.destination)
     o.type = 'sine'
     o.frequency.value = freq
-    g.gain.setValueAtTime(0.2, ctx.currentTime)
+    g.gain.setValueAtTime(vol, ctx.currentTime)
     o.start()
     o.stop(ctx.currentTime + ms / 1000)
   }
@@ -40,30 +61,28 @@ const API = {
     if (!res.ok) throw new Error(data.message || 'Failed to save updates')
     return data
   },
-  async upsert(players) {
-    const res = await fetch('/.netlify/functions/players', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ players }),
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.message || 'Failed to upsert players')
-    return data
-  }
 }
 
 export default function App() {
   const [players, setPlayers] = useState([])
   const [loading, setLoading] = useState(true)
   const [round, setRound] = useState(0)
-  const [timeLeft, setTimeLeft] = useState(12 * 60) // 12:00
+  const [timeLeft, setTimeLeft] = useState(LS.getRound() * 60)
   const [running, setRunning] = useState(false)
   const [matches, setMatches] = useState([])
+
+  // settings state
+  const [showSettings, setShowSettings] = useState(false)
+  const [roundMinutes, setRoundMinutes] = useState(LS.getRound())
+  const [warnSeconds, setWarnSeconds] = useState(LS.getWarn())
+  const [volume, setVolume] = useState(LS.getVol())
+  const volumeRef = useRef(volume)
+  useEffect(()=>{ volumeRef.current = volume }, [volume])
 
   const timerRef = useRef(null)
   const lastRoundBenched = useRef(new Set())
   const teammateHistory = useRef(new Map())
-  const { beep } = useBeep()
+  const { beep } = useBeep(volumeRef)
 
   // ---------- LOAD / REFRESH
   const refreshPlayers = async () => {
@@ -147,21 +166,21 @@ export default function App() {
   }
 
   // ---------- TIMER CONTROL
-  const startTimer = () => {
+  const startTimerInternal = () => {
     clearInterval(timerRef.current)
-    setTimeLeft(12 * 60)
+    setTimeLeft(roundMinutes * 60)
     setRunning(true)
     timerRef.current = setInterval(() => {
       setTimeLeft(prev => {
         const next = prev - 1
-        if (next === 30) beep(1200, 300) // 30s warning
+        if (next === warnSeconds) beep(1200, 320) // warning
         if (next <= 0) {
           clearInterval(timerRef.current)
-          beep(500, 600)                 // round end
+          beep(500, 700)                 // round end
           setRunning(false)
           setTimeout(async () => {
             await buildNextRound()
-            startTimer()
+            startTimerInternal()
           }, 350)
           return 0
         }
@@ -170,20 +189,20 @@ export default function App() {
     }, 1000)
   }
 
-  const handleStart = async () => {
+  const handleStart  = async () => {
     if (present.length < 16) {
       const ok = confirm(`Only ${present.length} present. Proceed anyway?`)
       if (!ok) return
     }
     await buildNextRound()
-    startTimer()
+    startTimerInternal()
   }
   const handlePause  = () => { if (running) { clearInterval(timerRef.current); setRunning(false) } }
-  const handleResume = () => { if (!running && timeLeft > 0) { startTimer() } }
-  const handleEnd    = () => { clearInterval(timerRef.current); setRunning(false); setTimeLeft(12*60); setMatches([]); setRound(0) }
-  const handleNext   = async () => { clearInterval(timerRef.current); setRunning(false); await buildNextRound(); startTimer() }
+  const handleResume = () => { if (!running && timeLeft > 0) { startTimerInternal() } }
+  const handleEnd    = () => { clearInterval(timerRef.current); setRunning(false); setTimeLeft(roundMinutes*60); setMatches([]); setRound(0) }
+  const handleNext   = async () => { clearInterval(timerRef.current); setRunning(false); await buildNextRound(); startTimerInternal() }
 
-  // bind header buttons by id (header is outside React root in our template)
+  // bind header buttons (outside React root)
   useEffect(() => {
     const s = document.getElementById('startBtn')
     const p = document.getElementById('pauseBtn')
@@ -196,13 +215,63 @@ export default function App() {
     e.onclick = handleEnd
     n.onclick = handleNext
     return () => { s.onclick = p.onclick = r.onclick = e.onclick = n.onclick = null }
-  }, [present, timeLeft, running])
+  }, [present, timeLeft, running, roundMinutes, warnSeconds])
 
-  // keep timer text in header fresh
+  // keep timer text fresh
   useEffect(() => {
     const el = document.getElementById('timerText')
     if (el) el.textContent = formatTime(timeLeft)
   }, [timeLeft])
+
+  // ---------- SETTINGS UI wiring
+  useEffect(() => {
+    const modal = document.getElementById('settingsModal')
+    const btn   = document.getElementById('settingsBtn')
+    const close = document.getElementById('closeSettings')
+    const mEl   = document.getElementById('roundMinutes')
+    const wEl   = document.getElementById('warnSeconds')
+    const vEl   = document.getElementById('volume')
+
+    // init inputs
+    mEl.value = String(roundMinutes)
+    wEl.value = String(warnSeconds)
+    vEl.value = String(volume)
+
+    const open = () => { modal.style.display = 'flex'; setShowSettings(true) }
+    const hide = () => { modal.style.display = 'none'; setShowSettings(false) }
+
+    btn.addEventListener('click', open)
+    close.addEventListener('click', hide)
+    modal.addEventListener('click', (e) => { if (e.target === modal) hide() })
+
+    // on-change persist + update state
+    const onM = (e) => {
+      const val = clampInt(e.target.value, roundMinutes, 3, 40)
+      setRoundMinutes(val); LS.setRound(val)
+      if (!running) setTimeLeft(val * 60)
+    }
+    const onW = (e) => {
+      const val = clampInt(e.target.value, warnSeconds, 5, 120)
+      setWarnSeconds(val); LS.setWarn(val)
+    }
+    const onV = (e) => {
+      const val = clampFloat(e.target.value, volume, 0, 1)
+      setVolume(val); LS.setVol(val)
+    }
+
+    mEl.addEventListener('input', onM)
+    wEl.addEventListener('input', onW)
+    vEl.addEventListener('input', onV)
+
+    return () => {
+      btn.removeEventListener('click', open)
+      close.removeEventListener('click', hide)
+      modal.removeEventListener('click', hide)
+      mEl.removeEventListener('input', onM)
+      wEl.removeEventListener('input', onW)
+      vEl.removeEventListener('input', onV)
+    }
+  }, [roundMinutes, warnSeconds, volume, running])
 
   if (loading) return <div style={{ padding: 16 }}>Loading…</div>
 
@@ -244,7 +313,12 @@ export default function App() {
 
   return (
     <div style={{ padding: 16 }}>
-      <div style={{ marginBottom: 8, fontSize: 16 }}>Round: <b>{round === 0 ? '–' : round}</b></div>
+      <div style={{ marginBottom: 8, fontSize: 16 }}>
+        Round: <b>{round === 0 ? '–' : round}</b> &nbsp;•&nbsp;
+        Length: <b>{roundMinutes}m</b> &nbsp;•&nbsp;
+        Warn at: <b>{warnSeconds}s</b> &nbsp;•&nbsp;
+        Volume: <b>{Math.round(volume*100)}%</b>
+      </div>
 
       {/* Lists with headers */}
       <div className="lists" style={styles.lists}>
@@ -272,7 +346,7 @@ export default function App() {
   )
 }
 
-// ---------- inline styles (quick polish)
+// ---------- inline styles
 const styles = {
   lists: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 },
   listCol: {},
