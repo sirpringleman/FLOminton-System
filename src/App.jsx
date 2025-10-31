@@ -500,7 +500,7 @@ const styles = {
   level: { opacity:0.9, fontVariantNumeric:'tabular-nums' },
 
   courts: { display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px, 1fr))', gap:16 },
-  court: { background:'#0f1630', border:'1px solid '#233058', borderRadius:16, padding:12 },
+  court: { background: '#0f1630', border: '1px solid '#233058', borderRadius:16, padding:12 },
   courtTitle: { margin:'0 0 8px 0' },
   team: { display:'flex', flexDirection:'column', gap:6 },
   tag: { background:'#0b132b', border:'1px solid #1f2742', borderRadius:10, padding:'6px 8px', display:'inline-flex', alignItems:'center', gap:6, width:'fit-content' },
