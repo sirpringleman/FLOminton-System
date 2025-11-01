@@ -26,4 +26,6 @@ LEFT TO DO:
 - Small bug / UI fixes
     - round # not increasing each time round ends
     - when admin mode is not enabled, 'Admin Controls' should be hidden from view on the Player List page
+    - hide player skill level when admin mode is not enabled
+    - better name for 'Start Night' and/or 'Resume' considering how they function now
 - Testing
