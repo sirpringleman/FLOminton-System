@@ -21,4 +21,9 @@ If you are developing a production application, we recommend using TypeScript wi
 LEFT TO DO:
 - UI Improvements
 - Function to swap out player on a court with someone sitting out easily
-
+- Sound Check
+- Logic fix
+- Small bug / UI fixes
+    - round # not increasing each time round ends
+    - when admin mode is not enabled, 'Admin Controls' should be hidden from view on the Player List page
+- Testing
