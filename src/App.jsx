@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   MATCH_MODES,
@@ -10,9 +9,7 @@ import {
 } from './logic';
 import './App.css';
 
-/* ========================================================================== */
-/* Netlify Functions API                                                      */
-/* ========================================================================== */
+/* ================= Netlify Functions API ================= */
 const API = '/.netlify/functions/players';
 
 const APIClient = {
@@ -67,9 +64,7 @@ const APIClient = {
   },
 };
 
-/* ========================================================================== */
-/* Local Storage helpers                                                      */
-/* ========================================================================== */
+/* ================= Local Storage helpers ================= */
 const LS = {
   getNum(k, def, min, max) {
     try {
@@ -80,22 +75,16 @@ const LS = {
   },
   set(k, v) { try { localStorage.setItem(k, String(v)); } catch {} },
 
-  setDisplay(payload) {
-    try { localStorage.setItem('flo.display.payload', JSON.stringify(payload)); } catch {}
-  },
+  setDisplay(payload) { try { localStorage.setItem('flo.display.payload', JSON.stringify(payload)); } catch {} },
   getDisplay() {
-    try {
-      const raw = localStorage.getItem('flo.display.payload');
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
+    try { const raw = localStorage.getItem('flo.display.payload'); return raw ? JSON.parse(raw) : null; }
+    catch { return null; }
   },
 };
 
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
-/* ========================================================================== */
-/* WebAudio Beeper                                                            */
-/* ========================================================================== */
+/* ================= WebAudio beeper ================= */
 function useBeep(volumeRef) {
   const ctxRef = useRef(null);
   const ensure = () => {
@@ -121,11 +110,9 @@ function useBeep(volumeRef) {
   return { beep };
 }
 
-/* ========================================================================== */
-/* App                                                                        */
-/* ========================================================================== */
+/* ================= App ================= */
 export default function App() {
-  /* ------------ Core State ------------ */
+  // Core state
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -146,7 +133,7 @@ export default function App() {
 
   const [matchMode, setMatchModeState] = useState(getMatchMode());
 
-  // UI panels
+  // UI
   const [showSettings, setShowSettings] = useState(false);
   const [showRundown, setShowRundown] = useState(false);
   const [isDisplay, setIsDisplay] = useState(getInitialUiIsDisplay());
@@ -155,14 +142,8 @@ export default function App() {
   const [adminKey, setAdminKey] = useState(sessionStorage.getItem('adminKey') || '');
   const isAdmin = !!adminKey;
 
-  // Diagnostics/Summary caches
-  const [diag, setDiag] = useState({
-    roundBuildTimes: [],
-    usedCourts: [],
-    teamImbalances: [],
-    spanPerMatch: [],
-    outOfBandCounts: [],
-  });
+  // Diagnostics/Summary
+  const [diag, setDiag] = useState({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
   const [rundown, setRundown] = useState({ rounds: 0, plays: {}, benches: {}, history: [] });
 
   // Fairness helpers
@@ -173,27 +154,24 @@ export default function App() {
   const lastDisplayTs = useRef(0);
   const { beep } = useBeep(volumeRef);
 
-  /* ------------ Load roster ------------ */
+  /* -------- Load roster -------- */
   useEffect(() => {
-    if (isDisplay) return; // display reads from localStorage feed
+    if (isDisplay) return;
     (async () => {
       try {
         const data = await APIClient.listPlayers();
         setPlayers(data);
       } catch (e) {
-        console.error(e);
-        alert(e.message || String(e));
-      } finally {
-        setLoading(false);
-      }
+        console.error(e); alert(e.message || String(e));
+      } finally { setLoading(false); }
     })();
   }, [isDisplay]);
 
-  /* ------------ Derived lists ------------ */
+  /* -------- Derived lists -------- */
   const present = useMemo(() => players.filter(p => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter(p => !p.is_present), [players]);
 
-  /* ------------ Display sync ------------ */
+  /* -------- Display sync (now also sends benched) -------- */
   const pushDisplay = (override = {}) => {
     const payload = {
       kind: 'flo-display-v1',
@@ -211,6 +189,7 @@ export default function App() {
         team1: m.team1.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
         team2: m.team2.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
       })),
+      benched: benched.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
       ...override,
     };
     LS.setDisplay(payload);
@@ -232,60 +211,47 @@ export default function App() {
       if (Array.isArray(payload.matches)) {
         const active = !!payload.running || (payload.round || 0) > 0;
         if (active && payload.matches.length === 0) {
-          // ignore empty replacement mid-round to avoid flicker
+          // ignore empty swap to avoid flicker
         } else {
-          setMatches(
-            payload.matches.map(m => ({
-              court: m.court,
-              avg1: m.avg1,
-              avg2: m.avg2,
-              team1: m.team1 || [],
-              team2: m.team2 || [],
-            }))
-          );
+          setMatches(payload.matches.map(m => ({
+            court: m.court, avg1: m.avg1, avg2: m.avg2,
+            team1: m.team1 || [], team2: m.team2 || [],
+          })));
         }
+      }
+      if (Array.isArray(payload.benched)) {
+        setBenched(payload.benched);
       }
     };
 
     // initial snapshot + listeners
     apply(LS.getDisplay());
-    const onStorage = (e) => {
-      if (e.key === 'flo.display.payload' && e.newValue) {
-        try { apply(JSON.parse(e.newValue)); } catch {}
-      }
-    };
+    const onStorage = (e) => { if (e.key === 'flo.display.payload' && e.newValue) { try { apply(JSON.parse(e.newValue)); } catch {} } };
     window.addEventListener('storage', onStorage);
     const poll = setInterval(() => apply(LS.getDisplay()), 800);
-
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      clearInterval(poll);
-    };
+    return () => { window.removeEventListener('storage', onStorage); clearInterval(poll); };
   }, [isDisplay]);
 
-  /* ------------ Mode toggle ------------ */
+  /* -------- Mode toggle (ADMIN ONLY) -------- */
   function toggleMode() {
+    if (!isAdmin) return;
     const next = matchMode === MATCH_MODES.WINDOW ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
     setMatchModeState(next);
     setMatchMode(next);
-    if (!isDisplay && round > 0) buildNextRound(roundRef.current); // rebuild with new mode
+    if (!isDisplay && round > 0) buildNextRound(roundRef.current);
   }
 
-  /* ------------ Presence toggle ------------ */
+  /* -------- Presence toggle -------- */
   async function togglePresent(p) {
     const nv = !p.is_present;
     setPlayers(prev => prev.map(x => x.id === p.id ? { ...x, is_present: nv } : x));
-    try {
-      await APIClient.patch([{ id: p.id, is_present: nv }]);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to save presence toggle');
-    }
+    try { await APIClient.patch([{ id: p.id, is_present: nv }]); }
+    catch (e) { console.error(e); alert('Failed to save presence toggle'); }
   }
 
-  /* ------------ Timer ------------ */
-  const isWarn = running && timerLeft <= warnSeconds;
-  const isBlink = !running && timerLeft === 0; // blink between rounds when 00:00
+  /* -------- Timer -------- */
+  const isWarn = running && timerLeft <= warnSeconds;      // turn yellow <= warnSeconds
+  const isBlink = !running && timerLeft === 0;             // blink red/white at 00:00
 
   function startTimer() {
     if (tickRef.current) return;
@@ -300,7 +266,6 @@ export default function App() {
           tickRef.current = null;
           setRunning(false);
           beep(500, 700);
-          // advance & restart
           setTimeout(async () => {
             await nextRoundInternal();
             setTimerLeft(timerTotal);
@@ -314,31 +279,22 @@ export default function App() {
   }
   function stopTimer() {
     setRunning(false);
-    if (tickRef.current) {
-      clearInterval(tickRef.current);
-      tickRef.current = null;
-    }
+    if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     pushDisplay({ running: false });
   }
 
-  /* ------------ Round build + persistence ------------ */
+  /* -------- Round build + persistence -------- */
   async function buildNextRound(nextRound) {
-    if (present.length < 4) {
-      alert('Not enough players present.');
-      return;
-    }
+    if (present.length < 4) { alert('Not enough players present.'); return; }
     const t0 = performance.now();
 
-    const { playing, benched } = selectPlayersForRound(
-      present, nextRound, lastRoundBenched.current, 4
-    );
+    const { playing, benched } = selectPlayersForRound(present, nextRound, lastRoundBenched.current, 4);
     lastRoundBenched.current = new Set(benched.map(b => b.id));
     setBenched(benched);
 
     const ms = buildMatchesFrom16(playing, teammateHistory.current, 4);
     setMatches(ms);
 
-    // Diagnostics snapshot
     const diagSnap = computeDiagnostics(ms);
     const t1 = performance.now();
     const buildMs = Math.max(0, t1 - t0);
@@ -350,7 +306,6 @@ export default function App() {
       outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
     }));
 
-    // Summary bookkeeping
     setRundown(prev => {
       const plays = { ...prev.plays };
       const benches = { ...prev.benches };
@@ -361,29 +316,17 @@ export default function App() {
       for (const b of benched) benches[b.id] = (benches[b.id] || 0) + 1;
       const history = [
         ...prev.history,
-        {
-          round: nextRound,
-          matches: ms.map(m => ({
-            court: m.court,
-            team1: m.team1.map(x => x.id),
-            team2: m.team2.map(x => x.id),
-          })),
-        },
+        { round: nextRound, matches: ms.map(m => ({ court: m.court, team1: m.team1.map(x => x.id), team2: m.team2.map(x => x.id) })) },
       ];
       return { rounds: nextRound, plays, benches, history };
     });
 
-    // Push to display
-    pushDisplay({ round: nextRound, matches: ms, presentCount: present.length });
+    pushDisplay({ round: nextRound, matches: ms, presentCount: present.length, benched });
   }
 
   async function saveRoundUpdatesFor(roundNum) {
-    // derive playing/benched IDs from current state
     const playingIds = new Set();
-    for (const m of matches) {
-      for (const p of m.team1) playingIds.add(p.id);
-      for (const p of m.team2) playingIds.add(p.id);
-    }
+    for (const m of matches) { for (const p of m.team1) playingIds.add(p.id); for (const p of m.team2) playingIds.add(p.id); }
     const benchIds = new Set(benched.map(b => b.id));
 
     const updates = [];
@@ -395,7 +338,6 @@ export default function App() {
     if (!updates.length) return;
 
     await APIClient.patch(updates);
-    // local mirror
     setPlayers(prev => prev.map(p => {
       if (playingIds.has(p.id)) return { ...p, last_played_round: roundNum };
       if (benchIds.has(p.id)) return { ...p, bench_count: (p.bench_count || 0) + 1 };
@@ -404,45 +346,37 @@ export default function App() {
   }
 
   async function nextRoundInternal() {
-    // persist last round
     if (roundRef.current > 0) {
       try { await saveRoundUpdatesFor(roundRef.current); }
       catch (e) { console.error(e); alert('Failed to save round updates'); }
     }
-    // increment and build
     const next = (roundRef.current || 0) + 1;
     setRound(next);
     roundRef.current = next;
     await buildNextRound(next);
   }
 
-  /* ------------ Toolbar actions ------------ */
+  /* -------- Toolbar actions -------- */
   async function onStartNight() {
-    // Reset local session state
+    // reset local session
     stopTimer();
-    setRound(1);
-    roundRef.current = 1;
+    setRound(1); roundRef.current = 1;
     setTimerLeft(timerTotal);
-    setMatches([]);
-    setBenched([]);
+    setMatches([]); setBenched([]);
     lastRoundBenched.current = new Set();
     teammateHistory.current = new Map();
     setRundown({ rounds: 0, plays: {}, benches: {}, history: [] });
     setDiag({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
 
-    // NEW: Reset bench_count and last_played_round in DB and locally
+    // reset bench_count + last_played_round (DB + local)
     try {
       const updates = players.map(p => ({ id: p.id, bench_count: 0, last_played_round: 0 }));
       if (updates.length) await APIClient.patch(updates);
       setPlayers(prev => prev.map(p => ({ ...p, bench_count: 0, last_played_round: 0 })));
-    } catch (e) {
-      console.error(e);
-      alert('Warning: failed to reset counters in database');
-    }
+    } catch (e) { console.error(e); alert('Warning: failed to reset counters in database'); }
 
-    // Build first round
     await buildNextRound(1);
-    pushDisplay({ round: 1, running: false, timeLeft: timerLeft, matches: [] });
+    pushDisplay({ round: 1, running: false, timeLeft: timerLeft, matches: [], benched: [] });
   }
   function onPause() { stopTimer(); }
   function onResume() {
@@ -450,28 +384,18 @@ export default function App() {
     if (matches.length === 0) { buildNextRound(roundRef.current || 1); }
     startTimer();
   }
-  async function onNextRound() {
-    stopTimer();
-    await nextRoundInternal();
-    setTimerLeft(timerTotal);
-  }
-  function onEndNight() {
-    stopTimer();
-    setShowRundown(true);
-  }
+  async function onNextRound() { stopTimer(); await nextRoundInternal(); setTimerLeft(timerTotal); }
+  function onEndNight() { stopTimer(); setShowRundown(true); }
   function closeRundown() {
-    // hard reset session
     setShowRundown(false);
-    setRound(0);
-    roundRef.current = 0;
-    setMatches([]);
-    setBenched([]);
+    setRound(0); roundRef.current = 0;
+    setMatches([]); setBenched([]);
     lastRoundBenched.current = new Set();
     teammateHistory.current = new Map();
-    pushDisplay({ round: 0, matches: [], running: false, timeLeft: 0 });
+    pushDisplay({ round: 0, matches: [], running: false, timeLeft: 0, benched: [] });
   }
 
-  /* ------------ Admin Mode ------------ */
+  /* -------- Admin -------- */
   function adminLogin() {
     const key = prompt('Enter admin key:');
     if (!key) return;
@@ -485,7 +409,7 @@ export default function App() {
     alert('Admin mode disabled');
   }
 
-  /* ------------ Settings ------------ */
+  /* -------- Settings -------- */
   function openSettings() { setShowSettings(true); }
   function saveSettings(mins, warn, vol) {
     LS.set('flo.round.minutes', mins);
@@ -499,40 +423,36 @@ export default function App() {
     pushDisplay({ timerTotal: mins * 60, warnSeconds: warn, timeLeft: mins * 60 });
   }
 
-  /* ------------ Display window ------------ */
+  /* -------- Display window -------- */
   function openDisplay() {
-    pushDisplay(); // send latest
+    pushDisplay();
     const url = new URL(window.location.href);
     url.searchParams.set('display', '1');
     window.open(url.toString(), '_blank', 'noopener,noreferrer');
   }
 
-  /* ------------ Diagnostics helpers ------------ */
+  /* -------- Diagnostics helpers -------- */
   function computeDiagnostics(roundMatches) {
     const used = roundMatches.length;
     const imbalances = roundMatches.map(m => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
-    const avgImbalance = imbalances.length ? imbalances.reduce((a,b) => a + b, 0) / imbalances.length : 0;
+    const avgImbalance = imbalances.length ? imbalances.reduce((a,b)=>a+b,0)/imbalances.length : 0;
     const spans = roundMatches.map(m => {
       const all = [...m.team1, ...m.team2].map(p => Number(p.skill_level || 0));
-      if (all.length < 1) return 0;
+      if (!all.length) return 0;
       return Math.max(...all) - Math.min(...all);
     });
-    const avgSpan = spans.length ? spans.reduce((a,b) => a + b, 0) / spans.length : 0;
-
-    // helper: count players outside ±2 from median of the 4
+    const avgSpan = spans.length ? spans.reduce((a,b)=>a+b,0)/spans.length : 0;
     const outOfBand = roundMatches.reduce((acc, m) => {
       const skills = [...m.team1, ...m.team2].map(p => Number(p.skill_level || 0)).sort((a,b)=>a-b);
       if (skills.length < 4) return acc;
       const mid = (skills[1] + skills[2]) / 2;
-      const c = skills.filter(s => Math.abs(s - mid) > 2).length;
-      return acc + c;
+      return acc + skills.filter(s => Math.abs(s - mid) > 2).length;
     }, 0);
-
     return { used, avgImbalance, avgSpan, outOfBand };
   }
 
-  /* ------------ Rendering helpers ------------ */
-  function Court({ m, large = false, showLevels }) {
+  /* -------- Render helpers (admin gating applied) -------- */
+  function Court({ m, large = false, showLevels, showAverages }) {
     const Tag = (pl) => (
       <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
         <span className={`pill sm ${pl.gender === 'F' ? 'female' : 'male'}`}>{pl.gender}</span>
@@ -543,20 +463,21 @@ export default function App() {
       <div className={`court glass ${large ? 'lg' : ''}`}>
         <div className="court-head">
           <h3>Court {m.court}</h3>
-          <div className="avg-pair">
-            <span className="avg">Team 1 Avg: <b>{m.avg1?.toFixed ? m.avg1.toFixed(1) : m.avg1}</b></span>
-            <span className="avg">Team 2 Avg: <b>{m.avg2?.toFixed ? m.avg2.toFixed(1) : m.avg2}</b></span>
-          </div>
+          {showAverages && (
+            <div className="avg-pair">
+              <span className="avg">Team 1 Avg: <b>{m.avg1?.toFixed ? m.avg1.toFixed(1) : m.avg1}</b></span>
+              <span className="avg">Team 2 Avg: <b>{m.avg2?.toFixed ? m.avg2.toFixed(1) : m.avg2}</b></span>
+            </div>
+          )}
         </div>
         <div className="team">{m.team1.map(Tag)}</div>
-        {/* MORE PROMINENT NET */}
         <div className="net strong"></div>
         <div className="team">{m.team2.map(Tag)}</div>
       </div>
     );
   }
 
-  function RowPlayer({ p, onDoubleClick, showLevels }) {
+  function RowPlayer({ p, onDoubleClick, showLevels, showBenchCount }) {
     return (
       <div
         className={`row-player ${p.is_present ? 'present' : ''} ${p.gender === 'F' ? 'female' : 'male'}`}
@@ -566,13 +487,13 @@ export default function App() {
         <div className="name">{p.name}</div>
         <div className="meta">
           {showLevels ? <span className="badge">Lvl {p.skill_level}</span> : null}
-          <span className="sub">Benched {p.bench_count}</span>
+          {showBenchCount ? <span className="sub">Benched {p.bench_count}</span> : null}
         </div>
       </div>
     );
   }
 
-  /* ------------ Admin Panel ------------ */
+  /* -------- Admin Panel (render ONLY when admin) -------- */
   function AdminPanel() {
     const [drafts, setDrafts] = useState({});
     useEffect(() => {
@@ -595,13 +516,10 @@ export default function App() {
         form.reset();
         const data = await APIClient.listPlayers();
         setPlayers(data);
-      } catch (e) {
-        alert(e.message || String(e));
-      }
+      } catch (e) { alert(e.message || String(e)); }
     }
     async function saveRow(id) {
-      const d = drafts[id];
-      if (!d) return;
+      const d = drafts[id]; if (!d) return;
       try {
         await APIClient.patch([{ id, name: d.name, gender: d.gender, skill_level: clamp(Number(d.skill_level || 3), 1, 10) }], adminKey);
         const data = await APIClient.listPlayers();
@@ -621,80 +539,63 @@ export default function App() {
       <div className="panel glass">
         <div className="panel-head">
           <h3>Admin Controls</h3>
-          {isAdmin ? (
-            <button className="btn" onClick={adminLogout}>Exit Admin</button>
-          ) : (
-            <button className="btn" onClick={adminLogin}>Admin</button>
-          )}
+          <button className="btn" onClick={adminLogout}>Exit Admin</button>
         </div>
 
-        {isAdmin && (
-          <>
-            <form onSubmit={addPlayer} className="grid add-form">
-              <input name="name" placeholder="Name" required className="input" />
-              <select name="gender" defaultValue="M" className="input">
-                <option value="M">M</option>
-                <option value="F">F</option>
-              </select>
-              <input name="skill" type="number" min="1" max="10" defaultValue="3" className="input" />
-              <button className="btn" type="submit">Add</button>
-            </form>
+        <form onSubmit={addPlayer} className="grid add-form">
+          <input name="name" placeholder="Name" required className="input" />
+          <select name="gender" defaultValue="M" className="input">
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
+          <input name="skill" type="number" min="1" max="10" defaultValue="3" className="input" />
+          <button className="btn" type="submit">Add</button>
+        </form>
 
-            <div className="table-wrap">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Gender</th>
-                    <th>Level</th>
-                    <th>Present</th>
-                    <th>Bench</th>
-                    <th>Last Round</th>
-                    <th>Actions</th>
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Name</th><th>Gender</th><th>Level</th>
+                <th>Present</th><th>Bench</th><th>Last Round</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {players.map(p => {
+                const d = drafts[p.id] || { name: p.name, gender: p.gender, skill_level: p.skill_level };
+                return (
+                  <tr key={p.id}>
+                    <td><input value={d.name} onChange={e => onDraft(p.id, 'name', e.target.value)} className="input" /></td>
+                    <td>
+                      <select value={d.gender} onChange={e => onDraft(p.id, 'gender', e.target.value)} className="input">
+                        <option value="M">M</option><option value="F">F</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input type="number" min="1" max="10" value={d.skill_level}
+                        onChange={e => onDraft(p.id, 'skill_level', clamp(Number(e.target.value || 3), 1, 10))}
+                        className="input" />
+                    </td>
+                    <td className="center">{p.is_present ? 'Yes' : 'No'}</td>
+                    <td className="center">{p.bench_count}</td>
+                    <td className="center">{p.last_played_round}</td>
+                    <td>
+                      <div className="row-actions">
+                        <button className="btn" onClick={() => saveRow(p.id)}>Save</button>
+                        <button className="btn danger" onClick={() => deleteRow(p.id)}>Delete</button>
+                      </div>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {players.map(p => {
-                    const d = drafts[p.id] || { name: p.name, gender: p.gender, skill_level: p.skill_level };
-                    return (
-                      <tr key={p.id}>
-                        <td><input value={d.name} onChange={e => onDraft(p.id, 'name', e.target.value)} className="input" /></td>
-                        <td>
-                          <select value={d.gender} onChange={e => onDraft(p.id, 'gender', e.target.value)} className="input">
-                            <option value="M">M</option>
-                            <option value="F">F</option>
-                          </select>
-                        </td>
-                        <td>
-                          <input
-                            type="number" min="1" max="10"
-                            value={d.skill_level}
-                            onChange={e => onDraft(p.id, 'skill_level', clamp(Number(e.target.value || 3), 1, 10))}
-                            className="input"
-                          />
-                        </td>
-                        <td className="center">{p.is_present ? 'Yes' : 'No'}</td>
-                        <td className="center">{p.bench_count}</td>
-                        <td className="center">{p.last_played_round}</td>
-                        <td>
-                          <div className="row-actions">
-                            <button className="btn" onClick={() => saveRow(p.id)}>Save</button>
-                            <button className="btn danger" onClick={() => deleteRow(p.id)}>Delete</button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
 
-  /* ------------ Settings Panel ------------ */
+  /* -------- Settings -------- */
   function SettingsPanel() {
     const [mins, setMins] = useState(Math.round(timerTotal / 60));
     const [warn, setWarn] = useState(warnSeconds);
@@ -708,35 +609,45 @@ export default function App() {
           <div className="settings-grid">
             <label className="setting">
               <span>Round length (minutes)</span>
-              <input type="number" min="3" max="60" value={mins} onChange={e => setMins(clamp(Number(e.target.value||12),3,60))} className="input" />
+              <input type="number" min="3" max="60" value={mins}
+                     onChange={e => setMins(clamp(Number(e.target.value||12),3,60))}
+                     className="input" />
             </label>
             <label className="setting">
               <span>Warning beep at (seconds left)</span>
-              <input type="number" min="5" max="120" value={warn} onChange={e => setWarn(clamp(Number(e.target.value||30),5,120))} className="input" />
+              <input type="number" min="5" max="120" value={warn}
+                     onChange={e => setWarn(clamp(Number(e.target.value||30),5,120))}
+                     className="input" />
             </label>
             <label className="setting">
               <span>Volume (0–1)</span>
-              <input type="number" step="0.05" min="0" max="1" value={vol} onChange={e => setVol(clamp(Number(e.target.value||0.3),0,1))} className="input" />
+              <input type="number" step="0.05" min="0" max="1" value={vol}
+                     onChange={e => setVol(clamp(Number(e.target.value||0.3),0,1))}
+                     className="input" />
             </label>
-            <div className="setting">
-              <span>Matchmaking Mode</span>
-              <div className="modes">
-                <label className="radio">
-                  <input type="radio" checked={modeLocal === MATCH_MODES.WINDOW} onChange={() => setModeLocal(MATCH_MODES.WINDOW)} />
-                  Window (±2 start)
-                </label>
-                <label className="radio">
-                  <input type="radio" checked={modeLocal === MATCH_MODES.BAND} onChange={() => setModeLocal(MATCH_MODES.BAND)} />
-                  Band (1–2 / 3–4 / 5–6 / 7–8 / 9–10)
-                </label>
+            {isAdmin && (
+              <div className="setting">
+                <span>Matchmaking Mode</span>
+                <div className="modes">
+                  <label className="radio">
+                    <input type="radio" checked={modeLocal === MATCH_MODES.WINDOW}
+                           onChange={() => setModeLocal(MATCH_MODES.WINDOW)} />
+                    Window (±2 start)
+                  </label>
+                  <label className="radio">
+                    <input type="radio" checked={modeLocal === MATCH_MODES.BAND}
+                           onChange={() => setModeLocal(MATCH_MODES.BAND)} />
+                    Band (1–2 / 3–4 / 5–6 / 7–8 / 9–10)
+                  </label>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <div className="right mt-16">
             <button className="btn" onClick={() => {
               saveSettings(mins, warn, vol);
-              if (modeLocal !== matchMode) {
+              if (isAdmin && modeLocal !== matchMode) {
                 setMatchModeState(modeLocal);
                 setMatchMode(modeLocal);
                 if (round > 0) buildNextRound(roundRef.current);
@@ -749,31 +660,22 @@ export default function App() {
     );
   }
 
-  /* ------------ Summary / Diagnostics ------------ */
+  /* -------- Summary & Diagnostics (unchanged UI) -------- */
   function buildSmartSummary() {
     const byId = Object.fromEntries(players.map(p => [p.id, p]));
     const rounds = rundown.rounds;
     const hist = rundown.history || [];
-
     const playRoundsMap = new Map();
     const teamSets = new Map();
     const oppSets = new Map();
 
-    let maxCourtsLocal = 0;
-
     for (const entry of hist) {
-      const used = entry.matches.length;
-      maxCourtsLocal = Math.max(maxCourtsLocal, used);
-
       for (const m of entry.matches) {
-        const t1 = m.team1;
-        const t2 = m.team2;
-
+        const t1 = m.team1, t2 = m.team2;
         for (const id of [...t1, ...t2]) {
           if (!playRoundsMap.has(id)) playRoundsMap.set(id, []);
           playRoundsMap.get(id).push(entry.round);
         }
-
         for (const a of t1) {
           if (!teamSets.has(a)) teamSets.set(a, new Set());
           if (!oppSets.has(a)) oppSets.set(a, new Set());
@@ -789,9 +691,9 @@ export default function App() {
       }
     }
 
-    const participants = Array.from(
-      new Set([].concat(...hist.flatMap(h => h.matches.flatMap(m => [...m.team1, ...m.team2]))))
-    ).map(id => byId[id]).filter(Boolean);
+    const participants = Array.from(new Set(
+      [].concat(...hist.flatMap(h => h.matches.flatMap(m => [...m.team1, ...m.team2])))
+    )).map(id => byId[id]).filter(Boolean);
 
     const per = participants.map(p => {
       const roundsPlayed = (playRoundsMap.get(p.id) || []).sort((a,b)=>a-b);
@@ -807,18 +709,13 @@ export default function App() {
 
       let worstStreak = 0, cur = 0;
       const playSet = new Set(roundsPlayed);
-      for (let r = 1; r <= rounds; r++) {
-        if (playSet.has(r)) cur = 0; else { cur++; worstStreak = Math.max(worstStreak, cur); }
-      }
+      for (let r = 1; r <= rounds; r++) { if (playSet.has(r)) cur = 0; else { cur++; worstStreak = Math.max(worstStreak, cur); } }
 
       const teammates = teamSets.get(p.id)?.size || 0;
       const opponents = oppSets.get(p.id)?.size || 0;
 
-      return {
-        id: p.id, name: p.name, level: p.skill_level, gender: p.gender,
-        played, benched, avgBenchGap, worstBenchStreak: worstStreak,
-        teammates, opponents,
-      };
+      return { id: p.id, name: p.name, level: p.skill_level, gender: p.gender,
+        played, benched, avgBenchGap, worstBenchStreak: worstStreak, teammates, opponents };
     });
 
     const plays = per.map(x => x.played);
@@ -827,16 +724,14 @@ export default function App() {
     const spread = plays.length ? Math.max(...plays) - Math.min(...plays) : 0;
     const fairnessRatio = plays.length ? (Math.min(...plays)/Math.max(...plays||[1])) : 0;
 
-    // Simple band buckets for overview
     const band = (lvl) => (lvl <= 3 ? '1-3' : lvl <= 6 ? '4-6' : '7-10');
     const byBand = { '1-3': 0, '4-6': 0, '7-10': 0 };
     for (const p of participants) byBand[band(p.skill_level)]++;
 
     const csvRows = [
       ['Name','Level','Played','Benched','AvgBenchGap','WorstBenchStreak','UniqueTeammates','UniqueOpponents'],
-      ...per
-        .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
-        .map(x => [x.name, x.level, x.played, x.benched, x.avgBenchGap.toFixed(2), x.worstBenchStreak, x.teammates, x.opponents]),
+      ...per.sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
+           .map(x => [x.name, x.level, x.played, x.benched, x.avgBenchGap.toFixed(2), x.worstBenchStreak, x.teammates, x.opponents]),
     ];
 
     const playsHist = {};
@@ -847,50 +742,31 @@ export default function App() {
       `Session Summary\n` +
       `Rounds: ${rundown.rounds}\n` +
       `Participants: ${participants.length}\n` +
-      `Courts (avg used): ${diag.usedCourts.length ? (diag.usedCourts.reduce((a,b)=>a+b,0)/diag.usedCourts.length).toFixed(2) : '0.00'} / 4\n` +
-      `Skill coverage: 1-3 ${(byBand['1-3']/Math.max(participants.length,1)*100).toFixed(1)}% • 4-6 ${(byBand['4-6']/Math.max(participants.length,1)*100).toFixed(1)}% • 7-10 ${(byBand['7-10']/Math.max(participants.length,1)*100).toFixed(1)}%\n\n` +
-      `Fairness\n` +
-      `Mean plays: ${meanPlays.toFixed(2)}   StdDev: ${stdDev.toFixed(2)}   Spread: ${spread}   Fairness ratio: ${fairnessRatio.toFixed(2)}\n` +
+      `Fairness — Mean plays: ${meanPlays.toFixed(2)} | StdDev: ${stdDev.toFixed(2)} | Spread: ${spread} | Ratio: ${fairnessRatio.toFixed(2)}\n` +
       `Avg bench gap: ${per.length ? (per.map(x=>x.avgBenchGap).reduce((a,b)=>a+b,0)/per.length).toFixed(2) : '0.00'} rounds\n` +
       `Worst bench streak (overall): ${per.length ? Math.max(...per.map(x=>x.worstBenchStreak)) : 0}\n` +
       `Plays histogram: ${playsHistText}\n`;
 
-    return {
-      per, csvRows, copyText,
+    return { per, csvRows, copyText,
       rounds: rundown.rounds, participantsCount: participants.length,
       males: participants.filter(p=>p.gender==='M').length,
       females: participants.filter(p=>p.gender==='F').length,
-      bands: byBand,
-      meanPlays, stdDev, spread, fairnessRatio,
-    };
+      bands: byBand, meanPlays, stdDev, spread, fairnessRatio };
   }
 
   function downloadCSV(rows, filename = 'session-summary.csv') {
-    const csv = rows.map(r =>
-      r.map(v => {
-        const s = String(v ?? '');
-        return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
-      }).join(',')
-    ).join('\n');
+    const csv = rows.map(r => r.map(v => {
+      const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+    }).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
     URL.revokeObjectURL(a.href);
   }
-
-  async function copyToClipboard(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      alert('Summary copied to clipboard');
-    } catch { alert('Copy failed'); }
-  }
+  async function copyToClipboard(text) { try { await navigator.clipboard.writeText(text); alert('Summary copied'); } catch { alert('Copy failed'); } }
 
   function RundownModal() {
     const S = buildSmartSummary();
     const [tab, setTab] = useState('summary');
-
     return (
       <div className="modal-backdrop">
         <div className="modal glass">
@@ -909,7 +785,7 @@ export default function App() {
                 </div>
                 <div>
                   <h4>Fairness</h4>
-                  <div>Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev: <b>{S.stdDev.toFixed(2)}</b> &nbsp; Spread: <b>{S.spread}</b> &nbsp; Fairness ratio: <b>{S.fairnessRatio.toFixed(2)}</b></div>
+                  <div>Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev: <b>{S.stdDev.toFixed(2)}</b> &nbsp; Spread: <b>{S.spread}</b> &nbsp; Ratio: <b>{S.fairnessRatio.toFixed(2)}</b></div>
                 </div>
               </div>
 
@@ -917,31 +793,23 @@ export default function App() {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>Name</th>
-                      <th>Lvl</th>
-                      <th>Played</th>
-                      <th>Benched</th>
-                      <th>Avg Bench Gap</th>
-                      <th>Worst Bench Streak</th>
-                      <th>Unique Teammates</th>
-                      <th>Unique Opponents</th>
+                      <th>Name</th><th>Lvl</th><th>Played</th><th>Benched</th>
+                      <th>Avg Bench Gap</th><th>Worst Bench Streak</th><th>Unique Teammates</th><th>Unique Opponents</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {S.per
-                      .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
-                      .map(x => (
-                        <tr key={x.id}>
-                          <td>{x.name}</td>
-                          <td className="center">{x.level}</td>
-                          <td className="center"><b>{x.played}</b></td>
-                          <td className="center">{x.benched}</td>
-                          <td className="center">{x.avgBenchGap.toFixed(2)}</td>
-                          <td className="center">{x.worstBenchStreak}</td>
-                          <td className="center">{x.teammates}</td>
-                          <td className="center">{x.opponents}</td>
-                        </tr>
-                      ))}
+                    {S.per.sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name)).map(x => (
+                      <tr key={x.id}>
+                        <td>{x.name}</td>
+                        <td className="center">{x.level}</td>
+                        <td className="center"><b>{x.played}</b></td>
+                        <td className="center">{x.benched}</td>
+                        <td className="center">{x.avgBenchGap.toFixed(2)}</td>
+                        <td className="center">{x.worstBenchStreak}</td>
+                        <td className="center">{x.teammates}</td>
+                        <td className="center">{x.opponents}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -960,21 +828,13 @@ export default function App() {
                 <div>
                   <h4>Round Build Performance</h4>
                   <div>Build times (ms): {(diag.roundBuildTimes || []).join(', ') || '-'}</div>
-                  <div>
-                    Avg build time:{' '}
-                    <b>
-                      {(
-                        ((diag.roundBuildTimes || []).reduce((a,b)=>a+b,0) / Math.max(1,(diag.roundBuildTimes||[]).length))
-                      ).toFixed(1)}
-                    </b>{' '}ms
-                  </div>
                   <div>Courts used per round: {(diag.usedCourts || []).join(', ') || '-'}</div>
                 </div>
                 <div>
                   <h4>Match Quality</h4>
-                  <div>Avg team imbalance per round: {(diag.teamImbalances || []).join(', ') || '-'}</div>
-                  <div>Avg skill span per match (round avg): {(diag.spanPerMatch || []).join(', ') || '-'}</div>
-                  <div>Out-of-band players / round (+/-2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}</div>
+                  <div>Avg team imbalance / round: {(diag.teamImbalances || []).join(', ') || '-'}</div>
+                  <div>Avg skill span / round: {(diag.spanPerMatch || []).join(', ') || '-'}</div>
+                  <div>Out-of-band (±2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}</div>
                 </div>
               </div>
 
@@ -988,13 +848,14 @@ export default function App() {
     );
   }
 
-  /* ------------ Display View ------------ */
+  /* -------- Display View (bigger names, centered header, yellow warn, blink at 00:00, benched row) -------- */
   function DisplayView() {
+    const headerClasses = `display-meta centered ${isWarn ? 'warn' : ''} ${(!running && timerLeft===0) ? 'blink-redwhite' : ''}`;
     return (
       <div className="display page">
         <div className="display-head">
-          <div className="display-title">Badminton Club Night</div>
-          <div className="display-meta">
+          <div className="display-title centered">Badminton Club Night</div>
+          <div className={headerClasses}>
             <span>Round {round || '-'}</span>
             <span>•</span>
             <span className={`bigtime ${isWarn ? 'warn' : ''} ${(!running && timerLeft===0) ? 'blink-redwhite' : ''}`}>
@@ -1002,24 +863,39 @@ export default function App() {
             </span>
             <span>•</span>
             <span>{present.length} present</span>
-            <span>•</span>
-            <span>Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}</span>
           </div>
-          <div className="display-hint">Press F for fullscreen</div>
+          <div className="display-hint centered">Press F for fullscreen</div>
         </div>
 
         <div className="display-courts">
           {matches.length === 0 ? (
-            <div className="muted p-20">Waiting for matches…</div>
+            <div className="muted p-20 centered">Waiting for matches…</div>
           ) : (
-            matches.map(m => <Court key={m.court} m={m} large showLevels={isAdmin} />)
+            matches.map(m => <Court key={m.court} m={m} large showLevels={false} showAverages={false} />)
+          )}
+        </div>
+
+        {/* Benched on display page (always visible here) */}
+        <div className="panel glass display-benched">
+          <div className="panel-head centered"><h3>Benched Players</h3></div>
+          {benched.length === 0 ? (
+            <div className="muted p-8 centered">No one benched this round.</div>
+          ) : (
+            <div className="bench-row centered">
+              {benched.map(p => (
+                <div className="tag lg display-name" key={p.id}>
+                  <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                  {p.name}
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>
     );
   }
 
-  /* ------------ Render ------------ */
+  /* -------- Render -------- */
   if (isDisplay) {
     useEffect(() => {
       const onKey = (e) => {
@@ -1045,7 +921,11 @@ export default function App() {
           <button className="btn" onClick={onNextRound}>Next Round</button>
           <button className="btn danger" onClick={onEndNight}>End Night</button>
           <button className="btn" onClick={openDisplay}>Open Display</button>
-          <button className="btn" onClick={toggleMode}>Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}</button>
+          {isAdmin && (
+            <button className="btn" onClick={toggleMode}>
+              Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}
+            </button>
+          )}
           <button className="btn ghost" onClick={openSettings}>Settings</button>
           {isAdmin ? (
             <button className="btn" onClick={adminLogout}>Admin (On)</button>
@@ -1058,13 +938,13 @@ export default function App() {
         </div>
       </div>
 
-      {/* Courts */}
+      {/* Courts (team averages + levels only in admin) */}
       <div id="courts" className="courts-grid">
-        {matches.map(m => <Court key={m.court} m={m} showLevels={isAdmin} />)}
+        {matches.map(m => <Court key={m.court} m={m} showLevels={isAdmin} showAverages={isAdmin} />)}
         {matches.length === 0 && <div className="muted p-12">No matches yet. Click <b>Resume</b> to build.</div>}
       </div>
 
-      {/* Benched strip */}
+      {/* Benched strip (always visible here, but no levels) */}
       <div className="panel glass">
         <div className="panel-head"><h3>Benched Players</h3></div>
         {benched.length === 0 ? (
@@ -1072,7 +952,7 @@ export default function App() {
         ) : (
           <div className="bench-row">
             {benched.map(p => (
-              <div className="tag" key={p.id} title={isAdmin ? `Lvl ${p.skill_level}` : ''}>
+              <div className="tag" key={p.id}>
                 <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
                 {p.name} {isAdmin ? <span className="muted">(L{p.skill_level})</span> : null}
               </div>
@@ -1081,28 +961,28 @@ export default function App() {
         )}
       </div>
 
-      {/* Rosters */}
+      {/* Rosters (bench count + levels admin-only) */}
       <div className="lists-grid">
         <div className="list-col">
-          <div className="list-head">
-            All Players <span className="badge">{notPresent.length}</span>
-          </div>
+          <div className="list-head">All Players <span className="badge">{notPresent.length}</span></div>
           <div id="allList" className="list-box glass">
-            {notPresent.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} />)}
+            {notPresent.map(p => (
+              <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} showBenchCount={isAdmin} />
+            ))}
           </div>
         </div>
         <div className="list-col">
-          <div className="list-head">
-            Present Today <span className="badge">{present.length}</span>
-          </div>
+          <div className="list-head">Present Today <span className="badge">{present.length}</span></div>
           <div id="presentList" className="list-box glass">
-            {present.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} />)}
+            {present.map(p => (
+              <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} showBenchCount={isAdmin} />
+            ))}
           </div>
         </div>
       </div>
 
-      {/* Admin controls */}
-      <AdminPanel />
+      {/* Admin controls (ENTIRE PANEL only when admin) */}
+      {isAdmin && <AdminPanel />}
 
       {/* Settings / Summary */}
       {showSettings && <SettingsPanel />}
@@ -1111,9 +991,7 @@ export default function App() {
   );
 }
 
-/* ========================================================================== */
-/* Utilities                                                                  */
-/* ========================================================================== */
+/* ================= Utilities ================= */
 function getInitialUiIsDisplay() {
   const url = new URL(window.location.href);
   return url.searchParams.get('display') === '1';
