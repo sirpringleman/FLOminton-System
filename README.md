@@ -21,6 +21,7 @@ If you are developing a production application, we recommend using TypeScript wi
 LEFT TO DO:
 - UI Improvements
 - Function to swap out player on a court with someone sitting out easily
+- Function to block / reduce available courts
 - Sound Check
 - Logic fix
 - Small bug / UI fixes

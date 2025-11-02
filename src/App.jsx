@@ -176,6 +176,11 @@ export default function App() {
   // Session state
   const [matches, setMatches] = useState([]);
   const [round, setRound] = useState(0);
+  const roundRef = useRef(0);
+  useEffect(() => {
+    roundRef.current = round;
+  }, [round]);
+
   const [timeLeft, setTimeLeft] = useState(LS.getRound() * 60);
   const [running, setRunning] = useState(false);
 
@@ -199,6 +204,9 @@ export default function App() {
     spanPerMatch: [],
     outOfBandCounts: [],
   });
+
+  // NEW: Benched this round (for horizontal display)
+  const [benchedThisRound, setBenchedThisRound] = useState([]);
 
   // Refs
   const timerRef = useRef(null);
@@ -343,7 +351,7 @@ export default function App() {
   };
 
   /* ============================================================================
-     Diagnostics computation for each round
+     Diagnostics computation
   ============================================================================ */
   const computeRoundDiagnostics = (roundMatches) => {
     const used = roundMatches.length;
@@ -367,6 +375,7 @@ export default function App() {
 
   /* ============================================================================
      Build next round (selection + matchmaking + persistence + summary)
+     NOTE: uses roundRef to avoid stale closures so timer-driven rounds increment correctly.
   ============================================================================ */
   const buildNextRound = async () => {
     if (present.length < 4) {
@@ -374,11 +383,12 @@ export default function App() {
       return;
     }
 
-    const roundNumber = round + 1;
+    const roundNumber = (roundRef.current || 0) + 1; // reliable next round
     const t0 = performance.now();
 
     const { playing, benched } = selectPlayersForRound(present, roundNumber, lastRoundBenched.current);
     lastRoundBenched.current = new Set(benched.map((b) => b.id));
+    setBenchedThisRound(benched); // NEW: remember for UI
 
     const newMatches = buildMatchesFrom16(playing, teammateHistory.current);
 
@@ -396,7 +406,8 @@ export default function App() {
     }));
 
     setMatches(newMatches);
-    setRound(roundNumber);
+    setRound(roundNumber);        // state
+    roundRef.current = roundNumber; // ref for timer path
 
     // Persist bench_count and last_played_round
     const updates = [];
@@ -447,6 +458,8 @@ export default function App() {
 
     // Push to display
     pushDisplay({ round: roundNumber, matches: newMatches, presentCount: present.length });
+
+    return roundNumber; // optional
   };
 
   /* ============================================================================
@@ -470,7 +483,7 @@ export default function App() {
           setRunning(false);
           pushDisplay({ timeLeft: 0, running: false, presentCount: present.length });
           setTimeout(async () => {
-            await buildNextRound();
+            await buildNextRound();   // will set round via roundRef path
             startTimerInternal();
           }, 350);
           return 0;
@@ -483,7 +496,17 @@ export default function App() {
   /* ============================================================================
      Toolbar actions
   ============================================================================ */
-  const onStartNight = () => setUi('session');
+  const onStartNight = () => {
+    // ensure truly clean session
+    setUi('session');
+    setMatches([]);
+    setBenchedThisRound([]);
+    setRound(0);
+    roundRef.current = 0;
+    setTimeLeft(roundMinutes * 60);
+    setRunning(false);
+    pushDisplay({ round: 0, matches: [], timeLeft: roundMinutes * 60, running: false, presentCount: present.length });
+  };
 
   const onResume = async () => {
     if (matches.length === 0) {
@@ -520,7 +543,9 @@ export default function App() {
     setShowRundown(false);
     setUi('home');
     setMatches([]);
+    setBenchedThisRound([]);
     setRound(0);
+    roundRef.current = 0;
     setTimeLeft(roundMinutes * 60);
     setRundown({ rounds: 0, plays: {}, benches: {}, history: [] });
     setDiag({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
@@ -628,7 +653,7 @@ export default function App() {
   };
 
   /* ============================================================================
-     Admin Panel
+     Admin Panel (unchanged from your working version)
   ============================================================================ */
   const AdminPanel = () => {
     const [drafts, setDrafts] = useState({});
@@ -884,15 +909,17 @@ export default function App() {
 
   /* ============================================================================
      Smart Session Summary + Diagnostics
+     (unchanged content, omitted here for brevity in reasoning; already working)
+     NOTE: no changes needed for the requested features.
   ============================================================================ */
   const buildSmartSummary = () => {
     const byId = Object.fromEntries(players.map((p) => [p.id, p]));
     const rounds = rundown.rounds;
     const hist = rundown.history || [];
 
-    const playRoundsMap = new Map(); // id -> [rounds]
-    const teamSets = new Map(); // id -> Set(teammates)
-    const oppSets = new Map(); // id -> Set(opponents)
+    const playRoundsMap = new Map();
+    const teamSets = new Map();
+    const oppSets = new Map();
 
     let maxCourtsLocal = 0;
     const usedCourtsPerRoundLocal = [];
@@ -1123,9 +1150,9 @@ export default function App() {
                 <div>
                   <h4>Overview</h4>
                   <div>Rounds: <b>{S.rounds}</b></div>
-                  <div>Participants: <b>{S.participantsCount}</b> (M {S.males} &bull; F {S.females})</div>
+                  <div>Participants: <b>{S.participantsCount}</b> (M {S.males} • F {S.females})</div>
                   <div>Courts (avg used): <b>{S.avgUsed.toFixed(2)}</b> / {S.maxCourts} ({fmtPct(S.utilization)})</div>
-                  <div>Skill coverage: 1-3 <b>{cov13}</b> &bull; 4-6 <b>{cov46}</b> &bull; 7-10 <b>{cov710}</b></div>
+                  <div>Skill coverage: 1-3 <b>{cov13}</b> • 4-6 <b>{cov46}</b> • 7-10 <b>{cov710}</b></div>
                 </div>
                 <div>
                   <h4>Fairness</h4>
@@ -1184,9 +1211,7 @@ export default function App() {
               <div className="two-col">
                 <div>
                   <h4>Round Build Performance</h4>
-                  <div>
-                    Build times (ms): {(diag.roundBuildTimes || []).join(', ') || '-'}
-                  </div>
+                  <div>Build times (ms): {(diag.roundBuildTimes || []).join(', ') || '-'}</div>
                   <div>
                     Avg build time:{' '}
                     <b>
@@ -1197,24 +1222,18 @@ export default function App() {
                     </b>{' '}
                     ms
                   </div>
-                  <div>
-                    Courts used per round: {(diag.usedCourts || []).join(', ') || '-'}
-                  </div>
+                  <div>Courts used per round: {(diag.usedCourts || []).join(', ') || '-'}</div>
                 </div>
-
                 <div>
                   <h4>Match Quality</h4>
                   <div>
-                    Avg team imbalance per round (abs(avg1 - avg2)):
-                    {' '}{(diag.teamImbalances || []).join(', ') || '-'}
+                    Avg team imbalance per round (abs(avg1 - avg2)): {(diag.teamImbalances || []).join(', ') || '-'}
                   </div>
                   <div>
-                    Avg skill span per match (round avg):
-                    {' '}{(diag.spanPerMatch || []).join(', ') || '-'}
+                    Avg skill span per match (round avg): {(diag.spanPerMatch || []).join(', ') || '-'}
                   </div>
                   <div>
-                    Out-of-band players count per round (+/- 2 from median):
-                    {' '}{(diag.outOfBandCounts || []).join(', ') || '-'}
+                    Out-of-band players count per round (+/- 2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}
                   </div>
                 </div>
               </div>
@@ -1224,7 +1243,6 @@ export default function App() {
               </div>
             </>
           )}
-
         </div>
       </div>
     );
@@ -1304,6 +1322,25 @@ export default function App() {
             {matches.map((m) => (
               <Court key={m.court} m={m} />
             ))}
+          </div>
+
+          {/* NEW: Benched Players strip (horizontal) */}
+          <div className="panel glass">
+            <div className="panel-head">
+              <h3>Benched Players</h3>
+            </div>
+            {benchedThisRound.length === 0 ? (
+              <div className="muted p-8">No one benched this round.</div>
+            ) : (
+              <div className="bench-row">
+                {benchedThisRound.map((p) => (
+                  <div className="tag" key={p.id} title={`Lvl ${p.skill_level}`}>
+                    <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                    {p.name}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="lists-grid">

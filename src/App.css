@@ -184,3 +184,13 @@ body{
   .lists-grid{ grid-template-columns:1fr }
   .courts-grid{ grid-template-columns:1fr }
 }
+/* Horizontal "Benched Players" strip */
+.bench-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 4px;
+}
+
+/* Small helper for padding in messages */
+.p-8 { padding: 8px; }
