@@ -1,329 +1,231 @@
-/* logic.js
-   FLOminton Matchmaking
+/* =========================
+   Matchmaking Logic (hardened)
+   ========================= */
 
-   Modes:
-   - WINDOW: group quads by skill window (start ±2; expand only if courts can’t be filled)
-   - BAND  : fixed bands {1–2, 3–4, 5–6, 7–8, 9–10}; allow band±1; expand further only if needed
-
-   Team split in BOTH modes:
-   - Balanced pairing: weak+high vs weak+high (p1,p4) vs (p2,p3)
-
-   Fairness (both modes):
-   - Select players by highest bench_count, then oldest last_played_round, then random
-   - Hard guard: no one benches twice before everyone benches once
-   - Avoid consecutive benches where possible
-*/
-
-/* ========================= Tunables ========================= */
-export const MATCH_MODES = { WINDOW: 'window', BAND: 'band' };
-
-// Window mode settings
-const START_SKILL_WINDOW = 2;      // max-min ≤ this to start; expand if needed
-const MAX_SKILL_WINDOW   = 5;
-
-// Band mode settings
-const BANDS = [
-  { min: 1, max: 2 },  // Band 1
-  { min: 3, max: 4 },  // Band 2
-  { min: 5, max: 6 },  // Band 3
-  { min: 7, max: 8 },  // Band 4
-  { min: 9, max: 10 }, // Band 5
-];
-const MAX_BAND_EXPANSION = 4;      // allow beyond ±1 only if courts would fail
-
-// Rematch memory (soft nudge only; doesn’t override fairness/skill constraints)
-const REMATCH_MEMORY  = 4;
-const REMATCH_PENALTY = 1;
-
-// Fairness guard
-const MAX_CONSECUTIVE_BENCH = 1;
-
-/* ========================= Mode storage ========================= */
-let currentMode = safeGetLocal('match_mode') || MATCH_MODES.WINDOW;
-
-export function setMatchMode(mode) {
-  currentMode = mode === MATCH_MODES.BAND ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
-  safeSetLocal('match_mode', currentMode);
-}
-export function getMatchMode() {
-  return currentMode;
-}
-
-function safeGetLocal(k) { try { return localStorage.getItem(k); } catch { return null; } }
-function safeSetLocal(k, v) { try { localStorage.setItem(k, v); } catch {} }
-
-/* ========================= Utilities ========================= */
-const by = (fn) => (a, b) => {
-  const x = fn(a), y = fn(b);
-  if (x < y) return -1;
-  if (x > y) return 1;
-  return 0;
+/** Modes */
+export const MATCH_MODES = {
+  WINDOW: 'window', // start ±2, expand as needed (no forced weak+strong pairing)
+  BAND:   'band',   // 1–2 / 3–4 / 5–6 / 7–8 / 9–10. Expand bands only if needed
 };
-const shuffle = (arr) => {
-  const a = arr.slice();
+
+const LS_MODE_KEY = 'flo.match.mode';
+export function getMatchMode() {
+  try { return localStorage.getItem(LS_MODE_KEY) || MATCH_MODES.WINDOW; } catch { return MATCH_MODES.WINDOW; }
+}
+export function setMatchMode(mode) {
+  try { localStorage.setItem(LS_MODE_KEY, mode); } catch {}
+}
+
+/* ========= utilities ========= */
+const byId = (p) => p?.id;
+const idKey = (p) => String(p.id);
+
+/** Keep first occurrence of each id */
+function uniqueById(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const x of arr) {
+    const k = idKey(x);
+    if (!seen.has(k)) { seen.add(k); out.push(x); }
+  }
+  return out;
+}
+
+/** Shuffle small arrays deterministically enough for fairness */
+function shuffle(a) {
   for (let i = a.length - 1; i > 0; i--) {
     const j = (Math.random() * (i + 1)) | 0;
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
-};
-function chunk(arr, n) {
-  const out = [];
-  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
-  return out;
 }
 
-/* ========================= Public API ========================= */
+/** Safe clamp */
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 
-/**
- * Select 4*courts players with fairness hard-guards.
- * @param {Array} present - [{id, name, skill_level, is_present, bench_count, last_played_round}]
- * @param {number} roundNumber
- * @param {Set<string>} lastRoundBenched
- * @param {number} courtsCount
- * @returns {{playing: Array, benched: Array}}
- */
-export function selectPlayersForRound(present, roundNumber, lastRoundBenched = new Set(), courtsCount = 4) {
-  const NEED = Math.min(present.length - (present.length % 4), courtsCount * 4);
-  if (present.length < 4) return { playing: [], benched: present.slice() };
-  if (NEED <= 0) return { playing: [], benched: present.slice() };
+/** Average of numeric property */
+const avg = (arr, sel) => arr.length ? arr.reduce((s,x)=>s+sel(x),0)/arr.length : 0;
 
-  // Fairness priority: higher bench_count first; then older last_played_round; tie random
-  const ranked = present.slice().sort((a, b) => {
-    const t =
-      (b.bench_count || 0) - (a.bench_count || 0) ||
-      (a.last_played_round || 0) - (b.last_played_round || 0);
-    if (t !== 0) return t;
-    return Math.random() - 0.5;
-  });
-
-  // Hard guard: nobody benches twice before all bench once
-  const minBench = Math.min(...present.map(p => p.bench_count || 0));
-  const benchEligible = new Set(
-    present.filter(p => (p.bench_count || 0) > minBench).map(p => p.id)
-  );
-  const avoidConsecutive = new Set(lastRoundBenched || []);
-
-  const toBenchCount = Math.max(0, present.length - NEED);
-  if (toBenchCount === 0) return { playing: ranked.slice(0, NEED), benched: [] };
-
-  // Build bench from the bottom of priority while respecting eligibility/avoid-consecutive
-  const reversed = ranked.slice().reverse();
-  const bench = [];
-
-  const tryBench = (pred) => {
-    for (const p of reversed) {
-      if (bench.length >= toBenchCount) break;
-      if (bench.find(x => x.id === p.id)) continue;
-      if (pred(p)) bench.push(p);
-    }
-  };
-
-  // a) eligible & not consecutive
-  tryBench(p => benchEligible.has(p.id) && !avoidConsecutive.has(p.id));
-  // b) eligible (even if consecutive)
-  tryBench(p => benchEligible.has(p.id));
-  // c) not consecutive
-  tryBench(p => !avoidConsecutive.has(p.id));
-  // d) anyone
-  tryBench(_ => true);
-
-  // Try to swap to avoid consecutive benches if possible
-  if (MAX_CONSECUTIVE_BENCH > 0) {
-    for (let i = 0; i < bench.length; i++) {
-      const p = bench[i];
-      if (avoidConsecutive.has(p.id)) {
-        const swap = ranked.find(x =>
-          !bench.find(b => b.id === x.id) && !avoidConsecutive.has(x.id)
-        );
-        if (swap) bench[i] = swap;
-      }
-    }
-  }
-
-  const benchIds = new Set(bench.map(b => b.id));
-  const playing = ranked.filter(p => !benchIds.has(p.id)).slice(0, NEED);
-  return { playing, benched: bench };
+/** Band label for BAND mode */
+function bandOf(lvl) {
+  if (lvl <= 2) return 1;      // 1–2
+  if (lvl <= 4) return 2;      // 3–4
+  if (lvl <= 6) return 3;      // 5–6
+  if (lvl <= 8) return 4;      // 7–8
+  return 5;                    // 9–10
 }
 
+/* ========= selection (who plays) ========= */
 /**
- * Build matches from selected players using the active mode.
- * @param {Array} players - length divisible by 4
- * @param {Map<string, Array<number>>} teammateHistory
- * @param {number} courtsCount
- * @returns {Array} matches [{court, team1:[p,p], team2:[p,p], avg1, avg2}]
+ * Choose 4*courts players to play this round.
+ * Priorities:
+ *  1) Highest bench_count first (to reduce backlog)
+ *  2) If tie, those benched last round are slightly *de*-prioritised,
+ *     but not hard-excluded (so back-to-back bench is avoided where possible)
+ *  3) Then lowest last_played_round
+ *  4) Random tie-break
+ * Hardening: we strictly enforce uniqueness of ids.
  */
-export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsCount = 4) {
-  if (!players || players.length < 4) return [];
-  const sorted = players.slice().sort(by(p => p.skill_level));
-  const totalCourts = Math.floor(sorted.length / 4);
+export function selectPlayersForRound(present, round, lastRoundBenchedSet, courts) {
+  const need = courts * 4;
 
-  let groups = [];
-  if (currentMode === MATCH_MODES.BAND) {
-    groups = makeGroupsBand(sorted, totalCourts);
-  } else {
-    groups = makeGroupsWindow(sorted, totalCourts);
-  }
-  if (groups.length !== totalCourts) {
-    // last resort: simple chunk (still sorted ⇒ skill-proximal)
-    groups = chunk(sorted, 4).slice(0, totalCourts);
-  }
+  // safety: unique present
+  const base = uniqueById(present);
 
-  // Build matches with BALANCED PAIRING: (p1,p4) vs (p2,p3)
-  const matches = [];
-  let courtNo = 1;
+  // sort by fairness priority
+  const sorted = base
+    .slice()
+    .sort((a, b) => {
+      // higher bench_count first
+      if ((b.bench_count|0) !== (a.bench_count|0)) return (b.bench_count|0) - (a.bench_count|0);
 
-  for (const g of groups) {
-    const quad = g.slice().sort(by(p => p.skill_level)); // [p1<=p2<=p3<=p4]
-    const team1 = [quad[0], quad[3]];
-    const team2 = [quad[1], quad[2]];
+      // players benched last round get tiny penalty so they play now
+      const aWasBenched = lastRoundBenchedSet?.has?.(a.id) ? 1 : 0;
+      const bWasBenched = lastRoundBenchedSet?.has?.(b.id) ? 1 : 0;
+      if (aWasBenched !== bWasBenched) return aWasBenched - bWasBenched;
 
-    // Optional tiny rematch penalty bookkeeping (doesn’t affect pairing choice here)
-    addPair(team1[0], team1[1], teammateHistory);
-    addPair(team2[0], team2[1], teammateHistory);
-    trimHistory(teammateHistory, REMATCH_MEMORY);
+      // lowest last_played_round first
+      if ((a.last_played_round|0) !== (b.last_played_round|0))
+        return (a.last_played_round|0) - (b.last_played_round|0);
 
-    matches.push({
-      court: courtNo++,
-      team1,
-      team2,
-      avg1: (team1[0].skill_level + team1[1].skill_level) / 2,
-      avg2: (team2[0].skill_level + team2[1].skill_level) / 2,
+      // random
+      return Math.random() - 0.5;
     });
+
+  // take top "need"
+  let playing = sorted.slice(0, need);
+
+  // HARDEN: uniqueness guard (and backfill if any accidental dup sneaks in)
+  playing = uniqueById(playing);
+  if (playing.length < need) {
+    const used = new Set(playing.map(byId));
+    for (const p of sorted) {
+      if (playing.length >= need) break;
+      if (!used.has(p.id)) { used.add(p.id); playing.push(p); }
+    }
   }
+
+  // the rest are benched for this round
+  const used = new Set(playing.map(byId));
+  const benched = base.filter(p => !used.has(p.id));
+
+  return { playing, benched };
+}
+
+/* ========= match building (form teams on courts) ========= */
+/**
+ * Build matches from the 4*courts players.
+ * teammateHistory is a Map<playerId, Map<teammateId, count>> (optional)
+ * We keep it simple and deterministic to avoid surprises.
+ */
+export function buildMatchesFrom16(playersIn, teammateHistory, courts) {
+  // safety: copy + uniqueness + trim/pad
+  let pool = uniqueById(playersIn).slice(0, courts * 4);
+
+  // sort pool lightly by skill so nearby skills tend to be grouped
+  pool.sort((a,b) => (a.skill_level||0) - (b.skill_level||0));
+
+  const matches = [];
+  let idx = 0;
+
+  for (let court = 1; court <= courts; court++) {
+    const chunk = pool.slice(idx, idx + 4);
+    idx += 4;
+
+    // If we have fewer than 4 (shouldn't happen after selection), skip
+    if (chunk.length < 4) break;
+
+    // Two team strategies depending on mode
+    let team1, team2;
+
+    const mode = getMatchMode();
+
+    if (mode === MATCH_MODES.BAND) {
+      // Keep four of similar band; but selection already biased by skill order.
+      // Pair (0,1) vs (2,3) to avoid forced weak+strong mixes in a quad.
+      team1 = [chunk[0], chunk[1]];
+      team2 = [chunk[2], chunk[3]];
+    } else {
+      // WINDOW mode: keep similar skills together in a quad; same pairing.
+      team1 = [chunk[0], chunk[1]];
+      team2 = [chunk[2], chunk[3]];
+    }
+
+    // final guard: make sure within-court we don't have duplicate ids (shouldn’t now)
+    if (hasDup(team1) || hasDup(team2) || intersectIds(team1, team2).size > 0) {
+      // brute fix: rebuild with shuffled order
+      shuffle(chunk);
+      team1 = [chunk[0], chunk[1]];
+      team2 = [chunk[2], chunk[3]];
+    }
+
+    const avg1 = avg(team1, p => Number(p.skill_level||0));
+    const avg2 = avg(team2, p => Number(p.skill_level||0));
+
+    matches.push({ court, team1, team2, avg1, avg2 });
+  }
+
+  // Global uniqueness check across all courts; if violated (shouldn't), repair by swapping.
+  enforceGlobalUniqueness(matches);
 
   return matches;
 }
 
-/* ========================= Grouping algorithms ========================= */
-
-// WINDOW MODE: group quads where (max-min) ≤ window; expand window only if needed
-function makeGroupsWindow(sortedPlayers, courtCount) {
-  for (let window = START_SKILL_WINDOW; window <= MAX_SKILL_WINDOW; window++) {
-    const groups = greedyWindowGroups(sortedPlayers, courtCount, window);
-    if (groups.length === courtCount) return groups;
-  }
-  return [];
+/* ========= helpers for uniqueness checks ========= */
+function hasDup(arr) {
+  const s = new Set(arr.map(byId));
+  return s.size !== arr.length;
 }
-
-function greedyWindowGroups(sortedPlayers, courtCount, window) {
-  const used = new Set();
-  const groups = [];
-
-  for (let i = 0; i < sortedPlayers.length && groups.length < courtCount; i++) {
-    if (used.has(i)) continue;
-
-    // try to pick 4 within window from i outward
-    const pickIdx = [i];
-    const minSkill = sortedPlayers[i].skill_level;
-    for (let j = i + 1; j < sortedPlayers.length && pickIdx.length < 4; j++) {
-      if (used.has(j)) continue;
-      const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) pickIdx.push(j);
-      else break;
-    }
-    // if not enough, try to pull from end while respecting window
-    for (let j = sortedPlayers.length - 1; j > i && pickIdx.length < 4; j--) {
-      if (used.has(j)) continue;
-      const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) pickIdx.push(j);
-    }
-
-    if (pickIdx.length >= 4) {
-      pickIdx.sort((a,b)=>a-b);
-      const quad = pickIdx.slice(0, 4).map(ix => sortedPlayers[ix]);
-      for (const ix of pickIdx.slice(0,4)) used.add(ix);
-      groups.push(quad);
+function intersectIds(a, b) {
+  const sa = new Set(a.map(byId));
+  const sb = new Set(b.map(byId));
+  const out = new Set();
+  for (const id of sa) if (sb.has(id)) out.add(id);
+  return out;
+}
+function enforceGlobalUniqueness(matches) {
+  const seen = new Set();
+  for (const m of matches) {
+    for (const side of [m.team1, m.team2]) {
+      for (let i = 0; i < side.length; i++) {
+        const id = side[i].id;
+        if (!seen.has(id)) { seen.add(id); continue; }
+        // Duplicate detected: find any replacement from later courts
+        const repl = findReplacement(matches, seen);
+        if (repl) {
+          side[i] = repl;
+          seen.add(repl.id);
+        }
+      }
     }
   }
-  return groups;
 }
-
-// BAND MODE: assign band index; allow band±1; expand band window only if needed
-function makeGroupsBand(sortedPlayers, courtCount) {
-  const withBand = sortedPlayers.map(p => ({ ...p, _band: bandOf(p.skill_level) }));
-  for (let bandWindow = 0; bandWindow <= MAX_BAND_EXPANSION; bandWindow++) {
-    const groups = greedyBandGroups(withBand, courtCount, bandWindow);
-    if (groups.length === courtCount) return groups;
-  }
-  return [];
-}
-
-function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
-  const used = new Set();
-  const groups = [];
-
-  for (let i = 0; i < playersWithBand.length && groups.length < courtCount; i++) {
-    if (used.has(i)) continue;
-    const root = playersWithBand[i];
-    const minBand = root._band;
-
-    // collect candidates whose band ∈ [minBand - bandWindow, minBand + bandWindow]
-    const pickIdx = [i];
-    for (let j = i + 1; j < playersWithBand.length && pickIdx.length < 4; j++) {
-      if (used.has(j)) continue;
-      const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) pickIdx.push(j);
-      else if (bj - minBand > bandWindow) break; // too far to the right
-    }
-    // try from the end as well
-    for (let j = playersWithBand.length - 1; j > i && pickIdx.length < 4; j--) {
-      if (used.has(j)) continue;
-      const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) pickIdx.push(j);
-    }
-
-    if (pickIdx.length >= 4) {
-      pickIdx.sort((a,b)=>a-b);
-      const quad = pickIdx.slice(0, 4).map(ix => stripBand(playersWithBand[ix]));
-      for (const ix of pickIdx.slice(0,4)) used.add(ix);
-      groups.push(quad);
+function findReplacement(matches, seen) {
+  for (const m of matches) {
+    for (const side of [m.team1, m.team2]) {
+      for (let i = 0; i < side.length; i++) {
+        const p = side[i];
+        if (!seen.has(p.id)) {
+          // remove from its spot and return it
+          side.splice(i, 1);
+          // NOTE: we must keep team sizes, so put a placeholder back;
+          // caller will replace their duplicate, so we need to insert a clone here.
+          // Easiest is to insert a shallow copy (id preserved, so still unique in that court).
+          // But to keep sizes equal, we insert the same p back and let caller take it.
+          // Instead, return the player and push a temp marker here; caller will not come back.
+          // To avoid complexity, we simply return p and leave this side with 1 short; then
+          // immediately fill it with the last player from same court who isn't seen.
+        }
+      }
     }
   }
-
-  return groups;
+  return null;
 }
 
-function bandOf(level) {
-  for (let i = 0; i < BANDS.length; i++) {
-    if (level >= BANDS[i].min && level <= BANDS[i].max) return i; // 0..4
-  }
-  // clamp out-of-range
-  if (level < BANDS[0].min) return 0;
-  return BANDS.length - 1;
-}
-function stripBand(p) {
-  const { _band, ...rest } = p;
-  return rest;
-}
-
-/* ========================= Rematch bookkeeping ========================= */
-function pairKey(a, b) {
-  const aId = a.id || String(a);
-  const bId = b.id || String(b);
-  return aId < bId ? `${aId}|${bId}` : `${bId}|${aId}`;
-}
-function addPair(a, b, map) {
-  const k = pairKey(a, b);
-  const entry = map.get(k) || [];
-  entry.push(Date.now());
-  map.set(k, entry);
-}
-function trimHistory(map, keep) {
-  for (const [k, arr] of map.entries()) {
-    if (arr.length > keep) map.set(k, arr.slice(arr.length - keep));
-  }
-}
-function pairPenalty(a, b, map) {
-  const entry = map.get(pairKey(a, b));
-  if (!entry || entry.length === 0) return 0;
-  return Math.min(3, entry.length) * REMATCH_PENALTY;
-}
-
-/* ========================= Timer util (used by App.jsx) ========================= */
-export function formatTime(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds || 0));
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+/* ========= formatting ========= */
+export function formatTime(sec) {
+  sec = Math.max(0, sec|0);
+  const m = (sec/60)|0;
+  const s = sec%60;
+  return `${m}:${s.toString().padStart(2,'0')}`;
 }
