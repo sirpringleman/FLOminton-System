@@ -284,6 +284,9 @@ export default function App() {
   }
 
   /* ------------ Timer ------------ */
+  const isWarn = running && timerLeft <= warnSeconds;
+  const isBlink = !running && timerLeft === 0; // blink between rounds when 00:00
+
   function startTimer() {
     if (tickRef.current) return;
     setRunning(true);
@@ -414,7 +417,8 @@ export default function App() {
   }
 
   /* ------------ Toolbar actions ------------ */
-  function onStartNight() {
+  async function onStartNight() {
+    // Reset local session state
     stopTimer();
     setRound(1);
     roundRef.current = 1;
@@ -425,7 +429,19 @@ export default function App() {
     teammateHistory.current = new Map();
     setRundown({ rounds: 0, plays: {}, benches: {}, history: [] });
     setDiag({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
-    buildNextRound(1);
+
+    // NEW: Reset bench_count and last_played_round in DB and locally
+    try {
+      const updates = players.map(p => ({ id: p.id, bench_count: 0, last_played_round: 0 }));
+      if (updates.length) await APIClient.patch(updates);
+      setPlayers(prev => prev.map(p => ({ ...p, bench_count: 0, last_played_round: 0 })));
+    } catch (e) {
+      console.error(e);
+      alert('Warning: failed to reset counters in database');
+    }
+
+    // Build first round
+    await buildNextRound(1);
     pushDisplay({ round: 1, running: false, timeLeft: timerLeft, matches: [] });
   }
   function onPause() { stopTimer(); }
@@ -516,13 +532,11 @@ export default function App() {
   }
 
   /* ------------ Rendering helpers ------------ */
-  const isWarn = running && timerLeft <= warnSeconds;
-
-  function Court({ m, large = false }) {
+  function Court({ m, large = false, showLevels }) {
     const Tag = (pl) => (
       <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
         <span className={`pill sm ${pl.gender === 'F' ? 'female' : 'male'}`}>{pl.gender}</span>
-        {pl.name} <span className="muted">(L{pl.skill_level})</span>
+        {pl.name} {showLevels ? <span className="muted">(L{pl.skill_level})</span> : null}
       </div>
     );
     return (
@@ -535,13 +549,14 @@ export default function App() {
           </div>
         </div>
         <div className="team">{m.team1.map(Tag)}</div>
-        <div className="net"></div>
+        {/* MORE PROMINENT NET */}
+        <div className="net strong"></div>
         <div className="team">{m.team2.map(Tag)}</div>
       </div>
     );
   }
 
-  function RowPlayer({ p, onDoubleClick }) {
+  function RowPlayer({ p, onDoubleClick, showLevels }) {
     return (
       <div
         className={`row-player ${p.is_present ? 'present' : ''} ${p.gender === 'F' ? 'female' : 'male'}`}
@@ -550,7 +565,7 @@ export default function App() {
       >
         <div className="name">{p.name}</div>
         <div className="meta">
-          <span className="badge">Lvl {p.skill_level}</span>
+          {showLevels ? <span className="badge">Lvl {p.skill_level}</span> : null}
           <span className="sub">Benched {p.bench_count}</span>
         </div>
       </div>
@@ -712,7 +727,7 @@ export default function App() {
                 </label>
                 <label className="radio">
                   <input type="radio" checked={modeLocal === MATCH_MODES.BAND} onChange={() => setModeLocal(MATCH_MODES.BAND)} />
-                  Band (1–2 / 3–4 / 5–6 / 7–10 / 9–10)
+                  Band (1–2 / 3–4 / 5–6 / 7–8 / 9–10)
                 </label>
               </div>
             </div>
@@ -745,12 +760,9 @@ export default function App() {
     const oppSets = new Map();
 
     let maxCourtsLocal = 0;
-    const usedCourtsPerRoundLocal = [];
 
     for (const entry of hist) {
-      const r = entry.round;
       const used = entry.matches.length;
-      usedCourtsPerRoundLocal.push(used);
       maxCourtsLocal = Math.max(maxCourtsLocal, used);
 
       for (const m of entry.matches) {
@@ -759,7 +771,7 @@ export default function App() {
 
         for (const id of [...t1, ...t2]) {
           if (!playRoundsMap.has(id)) playRoundsMap.set(id, []);
-          playRoundsMap.get(id).push(r);
+          playRoundsMap.get(id).push(entry.round);
         }
 
         for (const a of t1) {
@@ -786,7 +798,6 @@ export default function App() {
       const played = roundsPlayed.length;
       const benched = rundown.benches[p.id] || 0;
 
-      // avg bench gap
       const gaps = [];
       for (let i = 1; i < roundsPlayed.length; i++) {
         const gap = roundsPlayed[i] - roundsPlayed[i-1] - 1;
@@ -794,7 +805,6 @@ export default function App() {
       }
       const avgBenchGap = gaps.length ? gaps.reduce((a,b)=>a+b,0)/gaps.length : played ? 0 : 0;
 
-      // worst bench streak
       let worstStreak = 0, cur = 0;
       const playSet = new Set(roundsPlayed);
       for (let r = 1; r <= rounds; r++) {
@@ -817,16 +827,11 @@ export default function App() {
     const spread = plays.length ? Math.max(...plays) - Math.min(...plays) : 0;
     const fairnessRatio = plays.length ? (Math.min(...plays)/Math.max(...plays||[1])) : 0;
 
-    const maxCourts = Math.max(1, ...diag.usedCourts, 4);
-    const avgUsed = diag.usedCourts.length ? diag.usedCourts.reduce((a,b)=>a+b,0)/diag.usedCourts.length : 0;
-    const utilization = maxCourts ? avgUsed/maxCourts : 0;
-
-    // bands coverage
+    // Simple band buckets for overview
     const band = (lvl) => (lvl <= 3 ? '1-3' : lvl <= 6 ? '4-6' : '7-10');
     const byBand = { '1-3': 0, '4-6': 0, '7-10': 0 };
     for (const p of participants) byBand[band(p.skill_level)]++;
 
-    // CSV rows
     const csvRows = [
       ['Name','Level','Played','Benched','AvgBenchGap','WorstBenchStreak','UniqueTeammates','UniqueOpponents'],
       ...per
@@ -842,12 +847,12 @@ export default function App() {
       `Session Summary\n` +
       `Rounds: ${rundown.rounds}\n` +
       `Participants: ${participants.length}\n` +
-      `Courts (avg used): ${avgUsed.toFixed(2)} / ${maxCourts} (${(utilization*100).toFixed(1)}%)\n` +
+      `Courts (avg used): ${diag.usedCourts.length ? (diag.usedCourts.reduce((a,b)=>a+b,0)/diag.usedCourts.length).toFixed(2) : '0.00'} / 4\n` +
       `Skill coverage: 1-3 ${(byBand['1-3']/Math.max(participants.length,1)*100).toFixed(1)}% • 4-6 ${(byBand['4-6']/Math.max(participants.length,1)*100).toFixed(1)}% • 7-10 ${(byBand['7-10']/Math.max(participants.length,1)*100).toFixed(1)}%\n\n` +
       `Fairness\n` +
       `Mean plays: ${meanPlays.toFixed(2)}   StdDev: ${stdDev.toFixed(2)}   Spread: ${spread}   Fairness ratio: ${fairnessRatio.toFixed(2)}\n` +
       `Avg bench gap: ${per.length ? (per.map(x=>x.avgBenchGap).reduce((a,b)=>a+b,0)/per.length).toFixed(2) : '0.00'} rounds\n` +
-      `Worst bench streak (overall): ${per.length ? Math.max(...per.map(x=>x.worstBenchStreak)) : 0}\n\n` +
+      `Worst bench streak (overall): ${per.length ? Math.max(...per.map(x=>x.worstBenchStreak)) : 0}\n` +
       `Plays histogram: ${playsHistText}\n`;
 
     return {
@@ -855,9 +860,8 @@ export default function App() {
       rounds: rundown.rounds, participantsCount: participants.length,
       males: participants.filter(p=>p.gender==='M').length,
       females: participants.filter(p=>p.gender==='F').length,
-      maxCourts, avgUsed, utilization,
-      meanPlays, stdDev, spread, fairnessRatio,
       bands: byBand,
+      meanPlays, stdDev, spread, fairnessRatio,
     };
   }
 
@@ -902,8 +906,6 @@ export default function App() {
                   <h4>Overview</h4>
                   <div>Rounds: <b>{S.rounds}</b></div>
                   <div>Participants: <b>{S.participantsCount}</b> (M {S.males} • F {S.females})</div>
-                  <div>Courts (avg used): <b>{S.avgUsed.toFixed(2)}</b> / {S.maxCourts} ({(S.utilization*100).toFixed(1)}%)</div>
-                  <div>Skill coverage: 1-3 <b>{((S.bands['1-3']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b> • 4-6 <b>{((S.bands['4-6']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b> • 7-10 <b>{((S.bands['7-10']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b></div>
                 </div>
                 <div>
                   <h4>Fairness</h4>
@@ -995,7 +997,9 @@ export default function App() {
           <div className="display-meta">
             <span>Round {round || '-'}</span>
             <span>•</span>
-            <span className={`bigtime ${isWarn ? 'warn' : ''}`}>{formatTime(timerLeft)}</span>
+            <span className={`bigtime ${isWarn ? 'warn' : ''} ${(!running && timerLeft===0) ? 'blink-redwhite' : ''}`}>
+              {formatTime(timerLeft)}
+            </span>
             <span>•</span>
             <span>{present.length} present</span>
             <span>•</span>
@@ -1008,7 +1012,7 @@ export default function App() {
           {matches.length === 0 ? (
             <div className="muted p-20">Waiting for matches…</div>
           ) : (
-            matches.map(m => <Court key={m.court} m={m} large />)
+            matches.map(m => <Court key={m.court} m={m} large showLevels={isAdmin} />)
           )}
         </div>
       </div>
@@ -1049,14 +1053,14 @@ export default function App() {
             <button className="btn" onClick={adminLogin}>Admin</button>
           )}
         </div>
-        <div className={`toolbar-right time ${isWarn ? 'warn' : ''}`}>
+        <div className={`toolbar-right time ${isWarn ? 'warn' : ''} ${(!running && timerLeft===0) ? 'blink-redwhite' : ''}`}>
           {round > 0 ? `Round ${round} • ${formatTime(timerLeft)}` : 'Not running'}
         </div>
       </div>
 
       {/* Courts */}
       <div id="courts" className="courts-grid">
-        {matches.map(m => <Court key={m.court} m={m} />)}
+        {matches.map(m => <Court key={m.court} m={m} showLevels={isAdmin} />)}
         {matches.length === 0 && <div className="muted p-12">No matches yet. Click <b>Resume</b> to build.</div>}
       </div>
 
@@ -1068,9 +1072,9 @@ export default function App() {
         ) : (
           <div className="bench-row">
             {benched.map(p => (
-              <div className="tag" key={p.id} title={`Lvl ${p.skill_level}`}>
+              <div className="tag" key={p.id} title={isAdmin ? `Lvl ${p.skill_level}` : ''}>
                 <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
-                {p.name}
+                {p.name} {isAdmin ? <span className="muted">(L{p.skill_level})</span> : null}
               </div>
             ))}
           </div>
@@ -1084,7 +1088,7 @@ export default function App() {
             All Players <span className="badge">{notPresent.length}</span>
           </div>
           <div id="allList" className="list-box glass">
-            {notPresent.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} />)}
+            {notPresent.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} />)}
           </div>
         </div>
         <div className="list-col">
@@ -1092,7 +1096,7 @@ export default function App() {
             Present Today <span className="badge">{present.length}</span>
           </div>
           <div id="presentList" className="list-box glass">
-            {present.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} />)}
+            {present.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} showLevels={isAdmin} />)}
           </div>
         </div>
       </div>

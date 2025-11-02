@@ -55,6 +55,16 @@ body{
 .toolbar-right.time.warn{ color:var(--warn); animation:pulse 1s infinite; }
 @keyframes pulse{ 0%,100%{opacity:1} 50%{opacity:.6} }
 
+/* Blink red/white at 00:00 */
+.blink-redwhite{
+  animation: blinkrw .8s steps(2, jump-none) infinite;
+}
+@keyframes blinkrw{
+  0% { color:#ff4a4a; }
+  50% { color:#ffffff; }
+  100% { color:#ff4a4a; }
+}
+
 /* ================= Buttons ================= */
 .btn{
   appearance:none;
@@ -113,10 +123,25 @@ body{
   display:flex; flex-wrap:wrap; gap:8px; align-items:center;
   min-height:40px;
 }
+
+/* MORE PROMINENT NET */
 .court .net{
-  height:2px; background:linear-gradient(90deg, transparent, rgba(255,255,255,.15), transparent);
-  margin:8px 0;
+  height:4px;
+  margin:10px 0;
+  border-radius:3px;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.28), rgba(255,255,255,0)),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.45) 0 10px, rgba(255,255,255,.15) 10px 20px);
+  box-shadow: 0 0 10px rgba(255,255,255,.12), inset 0 0 2px rgba(0,0,0,.6);
 }
+.court .net.strong{
+  height:6px;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.38), rgba(255,255,255,0)),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.75) 0 12px, rgba(255,255,255,.25) 12px 24px);
+}
+
+/* tags / pills */
 .tag{
   background:var(--chip);
   border:1px solid var(--border);
