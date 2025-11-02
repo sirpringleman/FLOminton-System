@@ -1,94 +1,37 @@
+// src/App.jsx
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { formatTime, selectPlayersForRound, buildMatchesFrom16 } from './logic';
+import {
+  MATCH_MODES,
+  getMatchMode,
+  setMatchMode,
+  selectPlayersForRound,
+  buildMatchesFrom16,
+  formatTime,
+} from './logic';
 import './App.css';
 
-/* ============================================================================
-   Local storage helpers
-============================================================================ */
-const LS = {
-  getRound() {
-    return clampInt(localStorage.getItem('flo.roundMinutes'), 12, 3, 40);
-  },
-  setRound(v) {
-    localStorage.setItem('flo.roundMinutes', String(v));
-  },
-  getWarn() {
-    return clampInt(localStorage.getItem('flo.warnSeconds'), 30, 5, 120);
-  },
-  setWarn(v) {
-    localStorage.setItem('flo.warnSeconds', String(v));
-  },
-  getVol() {
-    return clampFloat(localStorage.getItem('flo.volume'), 0.3, 0, 1);
-  },
-  setVol(v) {
-    localStorage.setItem('flo.volume', String(v));
-  },
+/* ========================================================================== */
+/* Netlify Functions API                                                      */
+/* ========================================================================== */
+const API = '/.netlify/functions/players';
 
-  setDisplay(payload) {
-    localStorage.setItem('flo.display.payload', JSON.stringify(payload));
-  },
-  getDisplay() {
-    try {
-      return JSON.parse(localStorage.getItem('flo.display.payload') || 'null');
-    } catch {
-      return null;
-    }
-  },
-};
-
-function clampInt(raw, def, min, max) {
-  const n = parseInt(raw ?? '', 10);
-  if (Number.isFinite(n)) return Math.max(min, Math.min(max, n));
-  return def;
-}
-function clampFloat(raw, def, min, max) {
-  const n = parseFloat(raw ?? '');
-  if (Number.isFinite(n)) return Math.max(min, Math.min(max, n));
-  return def;
-}
-const fmtPct = (x) => (isFinite(x) ? (x * 100).toFixed(1) + '%' : '-');
-
-/* ============================================================================
-   WebAudio Beeper
-============================================================================ */
-function useBeep(volumeRef) {
-  const ctxRef = useRef(null);
-  const ensure = () => {
-    if (!ctxRef.current) {
-      const Ctor = window.AudioContext || window.webkitAudioContext;
-      ctxRef.current = new Ctor();
-    }
-    return ctxRef.current;
-  };
-  const beep = (freq = 800, ms = 250) => {
-    const vol = Math.max(0, Math.min(1, volumeRef.current ?? 0.3));
-    const ctx = ensure();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(vol, ctx.currentTime);
-    osc.start();
-    osc.stop(ctx.currentTime + ms / 1000);
-  };
-  return { beep };
-}
-
-/* ============================================================================
-   Netlify Functions API
-============================================================================ */
-const API = {
+const APIClient = {
   async listPlayers() {
-    const res = await fetch('/.netlify/functions/players', { method: 'GET' });
+    const res = await fetch(API, { method: 'GET' });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to load players');
-    return data;
+    if (!res.ok) throw new Error(data?.message || 'Failed to load players');
+    return (data || []).map(p => ({
+      id: p.id,
+      name: p.name,
+      gender: p.gender || 'M',
+      skill_level: Number(p.skill_level) || 1,
+      is_present: !!p.is_present,
+      bench_count: Number(p.bench_count) || 0,
+      last_played_round: Number(p.last_played_round) || 0,
+    }));
   },
   async patch(updates, adminKey) {
-    const res = await fetch('/.netlify/functions/players', {
+    const res = await fetch(API, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -98,105 +41,121 @@ const API = {
     });
     const text = await res.text();
     let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { message: text };
-    }
-    if (!res.ok) throw new Error(data.message || 'Failed to save updates');
+    try { data = JSON.parse(text); } catch { data = { message: text }; }
+    if (!res.ok) throw new Error(data?.message || 'PATCH failed');
     return data;
   },
   async upsert(players, adminKey) {
-    const res = await fetch('/.netlify/functions/players', {
+    const res = await fetch(API, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Admin-Key': adminKey || '',
-      },
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey || '' },
       body: JSON.stringify({ players }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to upsert players');
+    if (!res.ok) throw new Error(data?.message || 'UPSERT failed');
     return data;
   },
   async remove(ids, adminKey) {
-    const res = await fetch('/.netlify/functions/players', {
+    const res = await fetch(API, {
       method: 'DELETE',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Admin-Key': adminKey || '',
-      },
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey || '' },
       body: JSON.stringify({ ids }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.message || 'Failed to delete players');
+    if (!res.ok) throw new Error(data?.message || 'DELETE failed');
     return data;
   },
 };
 
-/* Batch public save (avoids CORS preflight pain for big payloads) */
-async function saveUpdatesPublic(updates) {
-  if (!updates?.length) return { ok: true };
-  const BATCH = 25;
-  for (let i = 0; i < updates.length; i += BATCH) {
-    const part = updates.slice(i, i + BATCH);
-    const res = await fetch('/.netlify/functions/players', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ updates: part }),
-    });
-    const text = await res.text();
-    let payload;
+/* ========================================================================== */
+/* Local Storage helpers                                                      */
+/* ========================================================================== */
+const LS = {
+  getNum(k, def, min, max) {
     try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { message: text };
+      const n = Number(localStorage.getItem(k));
+      if (Number.isFinite(n)) return clamp(n, min, max);
+    } catch {}
+    return def;
+  },
+  set(k, v) { try { localStorage.setItem(k, String(v)); } catch {} },
+
+  setDisplay(payload) {
+    try { localStorage.setItem('flo.display.payload', JSON.stringify(payload)); } catch {}
+  },
+  getDisplay() {
+    try {
+      const raw = localStorage.getItem('flo.display.payload');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  },
+};
+
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+
+/* ========================================================================== */
+/* WebAudio Beeper                                                            */
+/* ========================================================================== */
+function useBeep(volumeRef) {
+  const ctxRef = useRef(null);
+  const ensure = () => {
+    if (!ctxRef.current) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      ctxRef.current = new Ctor();
     }
-    if (!res.ok) throw new Error(payload.message || `PATCH failed (${res.status})`);
-    if (payload.ok === false && payload.errors?.length) {
-      console.warn('Partial update errors:', payload.errors);
-      alert('Some rows failed to save (see Functions logs).');
-    }
-  }
-  return { ok: true };
+    return ctxRef.current;
+  };
+  const beep = (freq = 900, ms = 250) => {
+    const v = clamp(volumeRef.current ?? 0.3, 0, 1);
+    const ctx = ensure();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    gain.gain.setValueAtTime(v, ctx.currentTime);
+    osc.start();
+    osc.stop(ctx.currentTime + ms / 1000);
+  };
+  return { beep };
 }
 
-/* ============================================================================
-   App
-============================================================================ */
+/* ========================================================================== */
+/* App                                                                        */
+/* ========================================================================== */
 export default function App() {
-  // Modes: home | session | display
-  const [ui, setUi] = useState(getInitialUi());
-  const isDisplay = ui === 'display';
-
-  // Data
+  /* ------------ Core State ------------ */
   const [players, setPlayers] = useState([]);
-  const [loading, setLoading] = useState(!isDisplay);
+  const [loading, setLoading] = useState(true);
 
-  // Session state
-  const [matches, setMatches] = useState([]);
   const [round, setRound] = useState(0);
   const roundRef = useRef(0);
-  useEffect(() => {
-    roundRef.current = round;
-  }, [round]);
 
-  const [timeLeft, setTimeLeft] = useState(LS.getRound() * 60);
+  const [matches, setMatches] = useState([]);
+  const [benched, setBenched] = useState([]);
+
   const [running, setRunning] = useState(false);
+  const [timerTotal, setTimerTotal] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
+  const [warnSeconds, setWarnSeconds] = useState(LS.getNum('flo.warn.seconds', 30, 5, 120));
+  const [timerLeft, setTimerLeft] = useState(timerTotal);
 
-  // Settings
-  const [roundMinutes, setRoundMinutes] = useState(LS.getRound());
-  const [warnSeconds, setWarnSeconds] = useState(LS.getWarn());
-  const [volume, setVolume] = useState(LS.getVol());
+  const [volume, setVolume] = useState(LS.getNum('flo.volume', 0.3, 0, 1));
+  const volumeRef = useRef(volume);
+  useEffect(() => { volumeRef.current = volume; }, [volume]);
+
+  const [matchMode, setMatchModeState] = useState(getMatchMode());
+
+  // UI panels
   const [showSettings, setShowSettings] = useState(false);
+  const [showRundown, setShowRundown] = useState(false);
+  const [isDisplay, setIsDisplay] = useState(getInitialUiIsDisplay());
 
-  // Admin mode
+  // Admin
   const [adminKey, setAdminKey] = useState(sessionStorage.getItem('adminKey') || '');
   const isAdmin = !!adminKey;
 
-  // Summary & Diagnostics
-  const [showRundown, setShowRundown] = useState(false);
-  const [rundown, setRundown] = useState({ rounds: 0, plays: {}, benches: {}, history: [] });
+  // Diagnostics/Summary caches
   const [diag, setDiag] = useState({
     roundBuildTimes: [],
     usedCourts: [],
@@ -204,44 +163,53 @@ export default function App() {
     spanPerMatch: [],
     outOfBandCounts: [],
   });
+  const [rundown, setRundown] = useState({ rounds: 0, plays: {}, benches: {}, history: [] });
 
-  // NEW: Benched this round (for horizontal display)
-  const [benchedThisRound, setBenchedThisRound] = useState([]);
+  // Fairness helpers
+  const lastRoundBenched = useRef(new Set());
+  const teammateHistory = useRef(new Map());
 
-  // Refs
-  const timerRef = useRef(null);
-  const volumeRef = useRef(volume);
-  useEffect(() => {
-    volumeRef.current = volume;
-  }, [volume]);
-
-  const lastRoundBenched = useRef(new Set()); // fairness tie-breaker
-  const teammateHistory = useRef(new Map());  // reduce teammate repeats
-
+  const tickRef = useRef(null);
+  const lastDisplayTs = useRef(0);
   const { beep } = useBeep(volumeRef);
 
-  /* ============================================================================
-     DISPLAY sync across windows (controller writes, display reads)
-  ============================================================================ */
-  const lastTsRef = useRef(0);
-  const [displaySeen, setDisplaySeen] = useState(false);
-  const [displayPresentCount, setDisplayPresentCount] = useState(0);
+  /* ------------ Load roster ------------ */
+  useEffect(() => {
+    if (isDisplay) return; // display reads from localStorage feed
+    (async () => {
+      try {
+        const data = await APIClient.listPlayers();
+        setPlayers(data);
+      } catch (e) {
+        console.error(e);
+        alert(e.message || String(e));
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [isDisplay]);
 
-  const pushDisplay = (override) => {
+  /* ------------ Derived lists ------------ */
+  const present = useMemo(() => players.filter(p => p.is_present), [players]);
+  const notPresent = useMemo(() => players.filter(p => !p.is_present), [players]);
+
+  /* ------------ Display sync ------------ */
+  const pushDisplay = (override = {}) => {
     const payload = {
       kind: 'flo-display-v1',
       ts: Date.now(),
       round,
       running,
-      timeLeft,
-      roundMinutes,
-      presentCount: players.filter((p) => p.is_present).length,
-      matches: matches.map((m) => ({
+      timeLeft: timerLeft,
+      timerTotal,
+      warnSeconds,
+      presentCount: present.length,
+      matches: matches.map(m => ({
         court: m.court,
         avg1: m.avg1,
         avg2: m.avg2,
-        team1: m.team1.map((p) => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
-        team2: m.team2.map((p) => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
+        team1: m.team1.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
+        team2: m.team2.map(p => ({ id: p.id, name: p.name, gender: p.gender, skill_level: p.skill_level })),
       })),
       ...override,
     };
@@ -250,26 +218,24 @@ export default function App() {
 
   useEffect(() => {
     if (!isDisplay) return;
-
     const apply = (payload) => {
       if (!payload || payload.kind !== 'flo-display-v1') return;
-      if (payload.ts && payload.ts <= lastTsRef.current) return;
-      lastTsRef.current = payload.ts || Date.now();
+      if (payload.ts && payload.ts <= lastDisplayTs.current) return;
+      lastDisplayTs.current = payload.ts || Date.now();
 
-      setDisplaySeen(true);
       setRound(Number(payload.round || 0));
       setRunning(!!payload.running);
-      setTimeLeft(Number(payload.timeLeft || 0));
-      setDisplayPresentCount(Number(payload.presentCount || 0));
+      setTimerLeft(Number(payload.timeLeft || 0));
+      setTimerTotal(Number(payload.timerTotal || (12 * 60)));
+      setWarnSeconds(Number(payload.warnSeconds || 30));
 
       if (Array.isArray(payload.matches)) {
-        const incoming = payload.matches;
         const active = !!payload.running || (payload.round || 0) > 0;
-        if (active && incoming.length === 0) {
-          // ignore clear while active
+        if (active && payload.matches.length === 0) {
+          // ignore empty replacement mid-round to avoid flicker
         } else {
           setMatches(
-            incoming.map((m) => ({
+            payload.matches.map(m => ({
               court: m.court,
               avg1: m.avg1,
               avg2: m.avg2,
@@ -281,21 +247,15 @@ export default function App() {
       }
     };
 
+    // initial snapshot + listeners
     apply(LS.getDisplay());
-
     const onStorage = (e) => {
-      if (e.key === 'flo.display.payload') {
-        try {
-          apply(JSON.parse(e.newValue));
-        } catch {}
+      if (e.key === 'flo.display.payload' && e.newValue) {
+        try { apply(JSON.parse(e.newValue)); } catch {}
       }
     };
     window.addEventListener('storage', onStorage);
-
-    const poll = setInterval(() => {
-      const snap = LS.getDisplay();
-      if (snap) apply(snap);
-    }, 800);
+    const poll = setInterval(() => apply(LS.getDisplay()), 800);
 
     return () => {
       window.removeEventListener('storage', onStorage);
@@ -303,339 +263,268 @@ export default function App() {
     };
   }, [isDisplay]);
 
-  /* ============================================================================
-     Load players (only on controller)
-  ============================================================================ */
-  useEffect(() => {
-    if (isDisplay) return;
-    (async () => {
-      try {
-        const data = await API.listPlayers();
-        const safe = (data || []).map((p) => ({
-          id: p.id,
-          name: p.name,
-          gender: p.gender || 'M',
-          skill_level: Number(p.skill_level || 1),
-          is_present: !!p.is_present,
-          bench_count: Number(p.bench_count || 0),
-          last_played_round: Number(p.last_played_round || 0),
-        }));
-        setPlayers(safe);
-      } catch (e) {
-        console.error(e);
-        alert(e.message || String(e));
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [isDisplay]);
+  /* ------------ Mode toggle ------------ */
+  function toggleMode() {
+    const next = matchMode === MATCH_MODES.WINDOW ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
+    setMatchModeState(next);
+    setMatchMode(next);
+    if (!isDisplay && round > 0) buildNextRound(roundRef.current); // rebuild with new mode
+  }
 
-  /* ============================================================================
-     Derived lists
-  ============================================================================ */
-  const present = useMemo(() => players.filter((p) => p.is_present), [players]);
-  const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
-
-  /* ============================================================================
-     Toggle presence
-  ============================================================================ */
-  const togglePresence = async (p) => {
-    const newVal = !p.is_present;
+  /* ------------ Presence toggle ------------ */
+  async function togglePresent(p) {
+    const nv = !p.is_present;
+    setPlayers(prev => prev.map(x => x.id === p.id ? { ...x, is_present: nv } : x));
     try {
-      await API.patch([{ id: p.id, is_present: newVal }]);
-      setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: newVal } : x)));
+      await APIClient.patch([{ id: p.id, is_present: nv }]);
     } catch (e) {
       console.error(e);
-      alert(e.message || String(e));
+      alert('Failed to save presence toggle');
     }
-  };
+  }
 
-  /* ============================================================================
-     Diagnostics computation
-  ============================================================================ */
-  const computeRoundDiagnostics = (roundMatches) => {
-    const used = roundMatches.length;
-    const imbalances = roundMatches.map((m) => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
-    const avgImbalance = imbalances.length ? imbalances.reduce((a, b) => a + b, 0) / imbalances.length : 0;
-    const spans = roundMatches.map((m) => {
-      const skills = [...m.team1, ...m.team2].map((p) => Number(p.skill_level || 0));
-      if (!skills.length) return 0;
-      return Math.max(...skills) - Math.min(...skills);
-    });
-    const avgSpan = spans.length ? spans.reduce((a, b) => a + b, 0) / spans.length : 0;
-    const outOfBand = roundMatches.reduce((acc, m) => {
-      const all = [...m.team1, ...m.team2].map((p) => Number(p.skill_level || 0)).sort((a, b) => a - b);
-      if (all.length < 4) return acc;
-      const mid = (all[1] + all[2]) / 2;
-      const count = all.filter((v) => Math.abs(v - mid) > 2).length;
-      return acc + count;
-    }, 0);
-    return { used, avgImbalance, avgSpan, outOfBand };
-  };
-
-  /* ============================================================================
-     Build next round (selection + matchmaking + persistence + summary)
-     NOTE: uses roundRef to avoid stale closures so timer-driven rounds increment correctly.
-  ============================================================================ */
-  const buildNextRound = async () => {
-    if (present.length < 4) {
-      alert('Not enough players present.');
-      return;
-    }
-
-    const roundNumber = (roundRef.current || 0) + 1; // reliable next round
-    const t0 = performance.now();
-
-    const { playing, benched } = selectPlayersForRound(present, roundNumber, lastRoundBenched.current);
-    lastRoundBenched.current = new Set(benched.map((b) => b.id));
-    setBenchedThisRound(benched); // NEW: remember for UI
-
-    const newMatches = buildMatchesFrom16(playing, teammateHistory.current);
-
-    const t1 = performance.now();
-    const buildMs = Math.max(0, t1 - t0);
-
-    // Diagnostics
-    const d = computeRoundDiagnostics(newMatches);
-    setDiag((prev) => ({
-      roundBuildTimes: [...prev.roundBuildTimes, Math.round(buildMs)],
-      usedCourts: [...prev.usedCourts, d.used],
-      teamImbalances: [...prev.teamImbalances, Number(d.avgImbalance.toFixed(3))],
-      spanPerMatch: [...prev.spanPerMatch, Number(d.avgSpan.toFixed(3))],
-      outOfBandCounts: [...prev.outOfBandCounts, d.outOfBand],
-    }));
-
-    setMatches(newMatches);
-    setRound(roundNumber);        // state
-    roundRef.current = roundNumber; // ref for timer path
-
-    // Persist bench_count and last_played_round
-    const updates = [];
-    for (const b of benched) updates.push({ id: b.id, bench_count: (b.bench_count || 0) + 1 });
-    for (const pl of playing) updates.push({ id: pl.id, last_played_round: roundNumber });
-    try {
-      await saveUpdatesPublic(updates);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to save round updates: ' + (e.message || String(e)));
-    }
-
-    // Refresh players
-    try {
-      const data = await API.listPlayers();
-      setPlayers(
-        (data || []).map((p) => ({
-          id: p.id,
-          name: p.name,
-          gender: p.gender || 'M',
-          skill_level: Number(p.skill_level || 1),
-          is_present: !!p.is_present,
-          bench_count: Number(p.bench_count || 0),
-          last_played_round: Number(p.last_played_round || 0),
-        }))
-      );
-    } catch {}
-
-    // Summary
-    setRundown((prev) => {
-      const plays = { ...prev.plays };
-      const benches = { ...prev.benches };
-      for (const p of playing) plays[p.id] = (plays[p.id] || 0) + 1;
-      for (const b of benched) benches[b.id] = (benches[b.id] || 0) + 1;
-      const history = [
-        ...prev.history,
-        {
-          round: roundNumber,
-          matches: newMatches.map((m) => ({
-            court: m.court,
-            team1: m.team1.map((x) => x.id),
-            team2: m.team2.map((x) => x.id),
-          })),
-        },
-      ];
-      return { rounds: roundNumber, plays, benches, history };
-    });
-
-    // Push to display
-    pushDisplay({ round: roundNumber, matches: newMatches, presentCount: present.length });
-
-    return roundNumber; // optional
-  };
-
-  /* ============================================================================
-     Timer (warning + end beeps, auto-next-round)
-  ============================================================================ */
-  const startTimerInternal = () => {
-    clearInterval(timerRef.current);
-    const start = roundMinutes * 60;
-    setTimeLeft(start);
+  /* ------------ Timer ------------ */
+  function startTimer() {
+    if (tickRef.current) return;
     setRunning(true);
-    pushDisplay({ timeLeft: start, running: true, presentCount: present.length });
-
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
+    tickRef.current = setInterval(() => {
+      setTimerLeft(prev => {
         const next = prev - 1;
-        pushDisplay({ timeLeft: next, running: true, presentCount: present.length });
-        if (next === warnSeconds) beep(1200, 320);
+        pushDisplay({ timeLeft: next, running: true });
+        if (next === warnSeconds) beep(1200, 350);
         if (next <= 0) {
-          clearInterval(timerRef.current);
-          beep(500, 700);
+          clearInterval(tickRef.current);
+          tickRef.current = null;
           setRunning(false);
-          pushDisplay({ timeLeft: 0, running: false, presentCount: present.length });
+          beep(500, 700);
+          // advance & restart
           setTimeout(async () => {
-            await buildNextRound();   // will set round via roundRef path
-            startTimerInternal();
+            await nextRoundInternal();
+            setTimerLeft(timerTotal);
+            startTimer();
           }, 350);
           return 0;
         }
         return next;
       });
     }, 1000);
-  };
-
-  /* ============================================================================
-     Toolbar actions
-  ============================================================================ */
-  const onStartNight = () => {
-    // ensure truly clean session
-    setUi('session');
-    setMatches([]);
-    setBenchedThisRound([]);
-    setRound(0);
-    roundRef.current = 0;
-    setTimeLeft(roundMinutes * 60);
+  }
+  function stopTimer() {
     setRunning(false);
-    pushDisplay({ round: 0, matches: [], timeLeft: roundMinutes * 60, running: false, presentCount: present.length });
-  };
-
-  const onResume = async () => {
-    if (matches.length === 0) {
-      await buildNextRound();
-      startTimerInternal();
-    } else if (!running && timeLeft > 0) {
-      startTimerInternal();
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
     }
-  };
+    pushDisplay({ running: false });
+  }
 
-  const onPause = () => {
-    if (running) {
-      clearInterval(timerRef.current);
-      setRunning(false);
-      pushDisplay({ running: false, presentCount: present.length });
+  /* ------------ Round build + persistence ------------ */
+  async function buildNextRound(nextRound) {
+    if (present.length < 4) {
+      alert('Not enough players present.');
+      return;
     }
-  };
+    const t0 = performance.now();
 
-  const onNextRound = async () => {
-    clearInterval(timerRef.current);
-    setRunning(false);
-    await buildNextRound();
-    startTimerInternal();
-  };
+    const { playing, benched } = selectPlayersForRound(
+      present, nextRound, lastRoundBenched.current, 4
+    );
+    lastRoundBenched.current = new Set(benched.map(b => b.id));
+    setBenched(benched);
 
-  const onEndNight = () => {
-    clearInterval(timerRef.current);
-    setRunning(false);
-    pushDisplay({ running: false, matches: [], timeLeft: 0, round: 0, presentCount: present.length });
-    setShowRundown(true);
-  };
+    const ms = buildMatchesFrom16(playing, teammateHistory.current, 4);
+    setMatches(ms);
 
-  const closeRundown = () => {
-    setShowRundown(false);
-    setUi('home');
+    // Diagnostics snapshot
+    const diagSnap = computeDiagnostics(ms);
+    const t1 = performance.now();
+    const buildMs = Math.max(0, t1 - t0);
+    setDiag(prev => ({
+      roundBuildTimes: [...prev.roundBuildTimes, Math.round(buildMs)],
+      usedCourts: [...prev.usedCourts, ms.length],
+      teamImbalances: [...prev.teamImbalances, Number(diagSnap.avgImbalance.toFixed(3))],
+      spanPerMatch: [...prev.spanPerMatch, Number(diagSnap.avgSpan.toFixed(3))],
+      outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
+    }));
+
+    // Summary bookkeeping
+    setRundown(prev => {
+      const plays = { ...prev.plays };
+      const benches = { ...prev.benches };
+      for (const m of ms) {
+        for (const p of m.team1) plays[p.id] = (plays[p.id] || 0) + 1;
+        for (const p of m.team2) plays[p.id] = (plays[p.id] || 0) + 1;
+      }
+      for (const b of benched) benches[b.id] = (benches[b.id] || 0) + 1;
+      const history = [
+        ...prev.history,
+        {
+          round: nextRound,
+          matches: ms.map(m => ({
+            court: m.court,
+            team1: m.team1.map(x => x.id),
+            team2: m.team2.map(x => x.id),
+          })),
+        },
+      ];
+      return { rounds: nextRound, plays, benches, history };
+    });
+
+    // Push to display
+    pushDisplay({ round: nextRound, matches: ms, presentCount: present.length });
+  }
+
+  async function saveRoundUpdatesFor(roundNum) {
+    // derive playing/benched IDs from current state
+    const playingIds = new Set();
+    for (const m of matches) {
+      for (const p of m.team1) playingIds.add(p.id);
+      for (const p of m.team2) playingIds.add(p.id);
+    }
+    const benchIds = new Set(benched.map(b => b.id));
+
+    const updates = [];
+    for (const id of playingIds) updates.push({ id, last_played_round: roundNum });
+    for (const id of benchIds) {
+      const pl = players.find(p => p.id === id);
+      updates.push({ id, bench_count: (pl?.bench_count || 0) + 1 });
+    }
+    if (!updates.length) return;
+
+    await APIClient.patch(updates);
+    // local mirror
+    setPlayers(prev => prev.map(p => {
+      if (playingIds.has(p.id)) return { ...p, last_played_round: roundNum };
+      if (benchIds.has(p.id)) return { ...p, bench_count: (p.bench_count || 0) + 1 };
+      return p;
+    }));
+  }
+
+  async function nextRoundInternal() {
+    // persist last round
+    if (roundRef.current > 0) {
+      try { await saveRoundUpdatesFor(roundRef.current); }
+      catch (e) { console.error(e); alert('Failed to save round updates'); }
+    }
+    // increment and build
+    const next = (roundRef.current || 0) + 1;
+    setRound(next);
+    roundRef.current = next;
+    await buildNextRound(next);
+  }
+
+  /* ------------ Toolbar actions ------------ */
+  function onStartNight() {
+    stopTimer();
+    setRound(1);
+    roundRef.current = 1;
+    setTimerLeft(timerTotal);
     setMatches([]);
-    setBenchedThisRound([]);
-    setRound(0);
-    roundRef.current = 0;
-    setTimeLeft(roundMinutes * 60);
-    setRundown({ rounds: 0, plays: {}, benches: {}, history: [] });
-    setDiag({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
+    setBenched([]);
     lastRoundBenched.current = new Set();
     teammateHistory.current = new Map();
-    pushDisplay({ round: 0, matches: [], timeLeft: 0, running: false, presentCount: present.length });
-  };
+    setRundown({ rounds: 0, plays: {}, benches: {}, history: [] });
+    setDiag({ roundBuildTimes: [], usedCourts: [], teamImbalances: [], spanPerMatch: [], outOfBandCounts: [] });
+    buildNextRound(1);
+    pushDisplay({ round: 1, running: false, timeLeft: timerLeft, matches: [] });
+  }
+  function onPause() { stopTimer(); }
+  function onResume() {
+    if (round === 0) { onStartNight(); }
+    if (matches.length === 0) { buildNextRound(roundRef.current || 1); }
+    startTimer();
+  }
+  async function onNextRound() {
+    stopTimer();
+    await nextRoundInternal();
+    setTimerLeft(timerTotal);
+  }
+  function onEndNight() {
+    stopTimer();
+    setShowRundown(true);
+  }
+  function closeRundown() {
+    // hard reset session
+    setShowRundown(false);
+    setRound(0);
+    roundRef.current = 0;
+    setMatches([]);
+    setBenched([]);
+    lastRoundBenched.current = new Set();
+    teammateHistory.current = new Map();
+    pushDisplay({ round: 0, matches: [], running: false, timeLeft: 0 });
+  }
 
-  /* ============================================================================
-     Admin login/logout
-  ============================================================================ */
-  const adminLogin = () => {
+  /* ------------ Admin Mode ------------ */
+  function adminLogin() {
     const key = prompt('Enter admin key:');
     if (!key) return;
     sessionStorage.setItem('adminKey', key);
     setAdminKey(key);
     alert('Admin mode enabled');
-  };
-  const adminLogout = () => {
+  }
+  function adminLogout() {
     sessionStorage.removeItem('adminKey');
     setAdminKey('');
     alert('Admin mode disabled');
-  };
+  }
 
-  /* ============================================================================
-     Open Display window
-  ============================================================================ */
-  const openDisplay = () => {
-    pushDisplay({ presentCount: players.filter((p) => p.is_present).length });
+  /* ------------ Settings ------------ */
+  function openSettings() { setShowSettings(true); }
+  function saveSettings(mins, warn, vol) {
+    LS.set('flo.round.minutes', mins);
+    LS.set('flo.warn.seconds', warn);
+    LS.set('flo.volume', vol);
+    setTimerTotal(mins * 60);
+    setTimerLeft(mins * 60);
+    setWarnSeconds(warn);
+    setVolume(vol);
+    setShowSettings(false);
+    pushDisplay({ timerTotal: mins * 60, warnSeconds: warn, timeLeft: mins * 60 });
+  }
+
+  /* ------------ Display window ------------ */
+  function openDisplay() {
+    pushDisplay(); // send latest
     const url = new URL(window.location.href);
     url.searchParams.set('display', '1');
     window.open(url.toString(), '_blank', 'noopener,noreferrer');
-  };
-
-  /* ============================================================================
-     Display hotkeys (fullscreen)
-  ============================================================================ */
-  useEffect(() => {
-    if (!isDisplay) return;
-    const onKey = (e) => {
-      if (e.key === 'f' || e.key === 'F') {
-        const el = document.documentElement;
-        if (!document.fullscreenElement) el.requestFullscreen?.();
-        else document.exitFullscreen?.();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isDisplay]);
-
-  /* ============================================================================
-     Rendering helpers
-  ============================================================================ */
-  if (!isDisplay && loading) {
-    return (
-      <div className="page">
-        <div className="loader">Loading...</div>
-      </div>
-    );
   }
-  const isWarn = running && timeLeft <= warnSeconds;
 
-  const personRow = (p) => {
-    const pill = p.gender === 'F' ? 'female' : 'male';
-    return (
-      <div
-        key={p.id}
-        className="person fade-in"
-        onDoubleClick={() => togglePresence(p)}
-        title="Double-click to toggle"
-      >
-        <div className="person-left">
-          <span className={`pill ${pill}`}>{p.gender}</span>
-          <span className="person-name">{p.name}</span>
-        </div>
-        <div className="level">Lvl {p.skill_level}</div>
+  /* ------------ Diagnostics helpers ------------ */
+  function computeDiagnostics(roundMatches) {
+    const used = roundMatches.length;
+    const imbalances = roundMatches.map(m => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
+    const avgImbalance = imbalances.length ? imbalances.reduce((a,b) => a + b, 0) / imbalances.length : 0;
+    const spans = roundMatches.map(m => {
+      const all = [...m.team1, ...m.team2].map(p => Number(p.skill_level || 0));
+      if (all.length < 1) return 0;
+      return Math.max(...all) - Math.min(...all);
+    });
+    const avgSpan = spans.length ? spans.reduce((a,b) => a + b, 0) / spans.length : 0;
+
+    // helper: count players outside ±2 from median of the 4
+    const outOfBand = roundMatches.reduce((acc, m) => {
+      const skills = [...m.team1, ...m.team2].map(p => Number(p.skill_level || 0)).sort((a,b)=>a-b);
+      if (skills.length < 4) return acc;
+      const mid = (skills[1] + skills[2]) / 2;
+      const c = skills.filter(s => Math.abs(s - mid) > 2).length;
+      return acc + c;
+    }, 0);
+
+    return { used, avgImbalance, avgSpan, outOfBand };
+  }
+
+  /* ------------ Rendering helpers ------------ */
+  const isWarn = running && timerLeft <= warnSeconds;
+
+  function Court({ m, large = false }) {
+    const Tag = (pl) => (
+      <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
+        <span className={`pill sm ${pl.gender === 'F' ? 'female' : 'male'}`}>{pl.gender}</span>
+        {pl.name} <span className="muted">(L{pl.skill_level})</span>
       </div>
     );
-  };
-
-  const Court = ({ m, large = false }) => {
-    const tag = (pl) => {
-      const pill = pl.gender === 'F' ? 'female' : 'male';
-      return (
-        <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
-          <span className={`pill sm ${pill}`}>{pl.gender}</span>
-          {pl.name} <span className="muted">(L{pl.skill_level})</span>
-        </div>
-      );
-    };
     return (
       <div className={`court glass ${large ? 'lg' : ''}`}>
         <div className="court-head">
@@ -645,17 +534,31 @@ export default function App() {
             <span className="avg">Team 2 Avg: <b>{m.avg2?.toFixed ? m.avg2.toFixed(1) : m.avg2}</b></span>
           </div>
         </div>
-        <div className="team">{m.team1.map(tag)}</div>
+        <div className="team">{m.team1.map(Tag)}</div>
         <div className="net"></div>
-        <div className="team">{m.team2.map(tag)}</div>
+        <div className="team">{m.team2.map(Tag)}</div>
       </div>
     );
-  };
+  }
 
-  /* ============================================================================
-     Admin Panel (unchanged from your working version)
-  ============================================================================ */
-  const AdminPanel = () => {
+  function RowPlayer({ p, onDoubleClick }) {
+    return (
+      <div
+        className={`row-player ${p.is_present ? 'present' : ''} ${p.gender === 'F' ? 'female' : 'male'}`}
+        onDoubleClick={onDoubleClick}
+        title="Double-click to toggle present"
+      >
+        <div className="name">{p.name}</div>
+        <div className="meta">
+          <span className="badge">Lvl {p.skill_level}</span>
+          <span className="sub">Benched {p.bench_count}</span>
+        </div>
+      </div>
+    );
+  }
+
+  /* ------------ Admin Panel ------------ */
+  function AdminPanel() {
     const [drafts, setDrafts] = useState({});
     useEffect(() => {
       const m = {};
@@ -663,97 +566,50 @@ export default function App() {
       setDrafts(m);
     }, [players]);
 
-    const onDraftChange = (id, field, value) =>
-      setDrafts((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+    const onDraft = (id, field, value) => setDrafts(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
 
-    const addPlayer = async (e) => {
+    async function addPlayer(e) {
       e.preventDefault();
       const form = e.target;
       const name = form.name.value.trim();
       const gender = form.gender.value;
-      const skill = clampInt(form.skill.value, 3, 1, 10);
+      const lvl = clamp(Number(form.skill.value || 3), 1, 10);
       if (!name) return alert('Name required');
       try {
-        await API.upsert(
-          [{ name, gender, skill_level: skill, is_present: false, bench_count: 0, last_played_round: 0 }],
-          adminKey
-        );
+        await APIClient.upsert([{ name, gender, skill_level: lvl, is_present: false, bench_count: 0, last_played_round: 0 }], adminKey);
         form.reset();
-        const data = await API.listPlayers();
-        setPlayers(
-          (data || []).map((p) => ({
-            id: p.id,
-            name: p.name,
-            gender: p.gender || 'M',
-            skill_level: Number(p.skill_level || 1),
-            is_present: !!p.is_present,
-            bench_count: Number(p.bench_count || 0),
-            last_played_round: Number(p.last_played_round || 0),
-          }))
-        );
-      } catch (err) {
-        alert(err.message || String(err));
+        const data = await APIClient.listPlayers();
+        setPlayers(data);
+      } catch (e) {
+        alert(e.message || String(e));
       }
-    };
-
-    const saveRow = async (id) => {
+    }
+    async function saveRow(id) {
       const d = drafts[id];
       if (!d) return;
       try {
-        await API.patch(
-          [{ id, name: d.name, gender: d.gender, skill_level: clampInt(d.skill_level, 3, 1, 10) }],
-          adminKey
-        );
-        const data = await API.listPlayers();
-        setPlayers(
-          (data || []).map((p) => ({
-            id: p.id,
-            name: p.name,
-            gender: p.gender || 'M',
-            skill_level: Number(p.skill_level || 1),
-            is_present: !!p.is_present,
-            bench_count: Number(p.bench_count || 0),
-            last_played_round: Number(p.last_played_round || 0),
-          }))
-        );
-      } catch (e) {
-        alert(e.message || String(e));
-      }
-    };
-
-    const deleteRow = async (id) => {
+        await APIClient.patch([{ id, name: d.name, gender: d.gender, skill_level: clamp(Number(d.skill_level || 3), 1, 10) }], adminKey);
+        const data = await APIClient.listPlayers();
+        setPlayers(data);
+      } catch (e) { alert(e.message || String(e)); }
+    }
+    async function deleteRow(id) {
       if (!confirm('Delete this player?')) return;
       try {
-        await API.remove([id], adminKey);
-        const data = await API.listPlayers();
-        setPlayers(
-          (data || []).map((p) => ({
-            id: p.id,
-            name: p.name,
-            gender: p.gender || 'M',
-            skill_level: Number(p.skill_level || 1),
-            is_present: !!p.is_present,
-            bench_count: Number(p.bench_count || 0),
-            last_played_round: Number(p.last_played_round || 0),
-          }))
-        );
-      } catch (e) {
-        alert(e.message || String(e));
-      }
-    };
+        await APIClient.remove([id], adminKey);
+        const data = await APIClient.listPlayers();
+        setPlayers(data);
+      } catch (e) { alert(e.message || String(e)); }
+    }
 
     return (
       <div className="panel glass">
         <div className="panel-head">
           <h3>Admin Controls</h3>
           {isAdmin ? (
-            <button className="btn" onClick={adminLogout}>
-              Exit Admin
-            </button>
+            <button className="btn" onClick={adminLogout}>Exit Admin</button>
           ) : (
-            <button className="btn" onClick={adminLogin}>
-              Admin
-            </button>
+            <button className="btn" onClick={adminLogin}>Admin</button>
           )}
         </div>
 
@@ -766,9 +622,7 @@ export default function App() {
                 <option value="F">F</option>
               </select>
               <input name="skill" type="number" min="1" max="10" defaultValue="3" className="input" />
-              <button className="btn" type="submit">
-                Add
-              </button>
+              <button className="btn" type="submit">Add</button>
             </form>
 
             <div className="table-wrap">
@@ -785,36 +639,22 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {players.map((p) => {
+                  {players.map(p => {
                     const d = drafts[p.id] || { name: p.name, gender: p.gender, skill_level: p.skill_level };
                     return (
                       <tr key={p.id}>
+                        <td><input value={d.name} onChange={e => onDraft(p.id, 'name', e.target.value)} className="input" /></td>
                         <td>
-                          <input
-                            value={d.name}
-                            onChange={(e) => onDraftChange(p.id, 'name', e.target.value)}
-                            className="input"
-                          />
-                        </td>
-                        <td>
-                          <select
-                            value={d.gender}
-                            onChange={(e) => onDraftChange(p.id, 'gender', e.target.value)}
-                            className="input"
-                          >
+                          <select value={d.gender} onChange={e => onDraft(p.id, 'gender', e.target.value)} className="input">
                             <option value="M">M</option>
                             <option value="F">F</option>
                           </select>
                         </td>
                         <td>
                           <input
-                            type="number"
-                            min="1"
-                            max="10"
+                            type="number" min="1" max="10"
                             value={d.skill_level}
-                            onChange={(e) =>
-                              onDraftChange(p.id, 'skill_level', clampInt(e.target.value, d.skill_level, 1, 10))
-                            }
+                            onChange={e => onDraft(p.id, 'skill_level', clamp(Number(e.target.value || 3), 1, 10))}
                             className="input"
                           />
                         </td>
@@ -823,12 +663,8 @@ export default function App() {
                         <td className="center">{p.last_played_round}</td>
                         <td>
                           <div className="row-actions">
-                            <button className="btn" onClick={() => saveRow(p.id)}>
-                              Save
-                            </button>
-                            <button className="btn danger" onClick={() => deleteRow(p.id)}>
-                              Delete
-                            </button>
+                            <button className="btn" onClick={() => saveRow(p.id)}>Save</button>
+                            <button className="btn danger" onClick={() => deleteRow(p.id)}>Delete</button>
                           </div>
                         </td>
                       </tr>
@@ -841,79 +677,66 @@ export default function App() {
         )}
       </div>
     );
-  };
+  }
 
-  /* ============================================================================
-     Settings
-  ============================================================================ */
-  const SettingsPanel = () => (
-    <div className="modal-backdrop">
-      <div className="modal glass">
-        <h3>Settings</h3>
-        <div className="settings-grid">
-          <label className="setting">
-            <span>Round length (minutes)</span>
-            <input
-              type="number"
-              min={3}
-              max={40}
-              value={roundMinutes}
-              onChange={(e) => setRoundMinutes(clampInt(e.target.value, roundMinutes, 3, 40))}
-              className="input"
-            />
-          </label>
-          <label className="setting">
-            <span>Warning beep at (seconds left)</span>
-            <input
-              type="number"
-              min={5}
-              max={120}
-              value={warnSeconds}
-              onChange={(e) => setWarnSeconds(clampInt(e.target.value, warnSeconds, 5, 120))}
-              className="input"
-            />
-          </label>
-          <label className="setting">
-            <span>Volume (0-1)</span>
-            <input
-              type="number"
-              step="0.05"
-              min={0}
-              max={1}
-              value={volume}
-              onChange={(e) => setVolume(clampFloat(e.target.value, volume, 0, 1))}
-              className="input"
-            />
-          </label>
-        </div>
-        <div className="right mt-16">
-          <button
-            className="btn"
-            onClick={() => {
-              LS.setRound(roundMinutes);
-              LS.setWarn(warnSeconds);
-              LS.setVol(volume);
-              setTimeLeft(roundMinutes * 60);
-              setShowSettings(false);
-            }}
-          >
-            Save
-          </button>
-          <button className="btn ghost" onClick={() => setShowSettings(false)}>
-            Close
-          </button>
+  /* ------------ Settings Panel ------------ */
+  function SettingsPanel() {
+    const [mins, setMins] = useState(Math.round(timerTotal / 60));
+    const [warn, setWarn] = useState(warnSeconds);
+    const [vol, setVol] = useState(volume);
+    const [modeLocal, setModeLocal] = useState(matchMode);
+
+    return (
+      <div className="modal-backdrop">
+        <div className="modal glass">
+          <h3>Settings</h3>
+          <div className="settings-grid">
+            <label className="setting">
+              <span>Round length (minutes)</span>
+              <input type="number" min="3" max="60" value={mins} onChange={e => setMins(clamp(Number(e.target.value||12),3,60))} className="input" />
+            </label>
+            <label className="setting">
+              <span>Warning beep at (seconds left)</span>
+              <input type="number" min="5" max="120" value={warn} onChange={e => setWarn(clamp(Number(e.target.value||30),5,120))} className="input" />
+            </label>
+            <label className="setting">
+              <span>Volume (0–1)</span>
+              <input type="number" step="0.05" min="0" max="1" value={vol} onChange={e => setVol(clamp(Number(e.target.value||0.3),0,1))} className="input" />
+            </label>
+            <div className="setting">
+              <span>Matchmaking Mode</span>
+              <div className="modes">
+                <label className="radio">
+                  <input type="radio" checked={modeLocal === MATCH_MODES.WINDOW} onChange={() => setModeLocal(MATCH_MODES.WINDOW)} />
+                  Window (±2 start)
+                </label>
+                <label className="radio">
+                  <input type="radio" checked={modeLocal === MATCH_MODES.BAND} onChange={() => setModeLocal(MATCH_MODES.BAND)} />
+                  Band (1–2 / 3–4 / 5–6 / 7–10 / 9–10)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="right mt-16">
+            <button className="btn" onClick={() => {
+              saveSettings(mins, warn, vol);
+              if (modeLocal !== matchMode) {
+                setMatchModeState(modeLocal);
+                setMatchMode(modeLocal);
+                if (round > 0) buildNextRound(roundRef.current);
+              }
+            }}>Save</button>
+            <button className="btn ghost" onClick={() => setShowSettings(false)}>Close</button>
+          </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
 
-  /* ============================================================================
-     Smart Session Summary + Diagnostics
-     (unchanged content, omitted here for brevity in reasoning; already working)
-     NOTE: no changes needed for the requested features.
-  ============================================================================ */
-  const buildSmartSummary = () => {
-    const byId = Object.fromEntries(players.map((p) => [p.id, p]));
+  /* ------------ Summary / Diagnostics ------------ */
+  function buildSmartSummary() {
+    const byId = Object.fromEntries(players.map(p => [p.id, p]));
     const rounds = rundown.rounds;
     const hist = rundown.history || [];
 
@@ -955,193 +778,121 @@ export default function App() {
     }
 
     const participants = Array.from(
-      new Set([].concat(...hist.flatMap((h) => h.matches.flatMap((m) => [...m.team1, ...m.team2]))))
-    )
-      .map((id) => byId[id])
-      .filter(Boolean);
+      new Set([].concat(...hist.flatMap(h => h.matches.flatMap(m => [...m.team1, ...m.team2]))))
+    ).map(id => byId[id]).filter(Boolean);
 
-    const per = participants.map((p) => {
-      const roundsPlayed = (playRoundsMap.get(p.id) || []).sort((a, b) => a - b);
+    const per = participants.map(p => {
+      const roundsPlayed = (playRoundsMap.get(p.id) || []).sort((a,b)=>a-b);
       const played = roundsPlayed.length;
       const benched = rundown.benches[p.id] || 0;
 
-      let gaps = [];
+      // avg bench gap
+      const gaps = [];
       for (let i = 1; i < roundsPlayed.length; i++) {
-        const gap = roundsPlayed[i] - roundsPlayed[i - 1] - 1;
+        const gap = roundsPlayed[i] - roundsPlayed[i-1] - 1;
         if (gap >= 0) gaps.push(gap);
       }
-      const avgBenchGap = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : played > 0 ? 0 : NaN;
+      const avgBenchGap = gaps.length ? gaps.reduce((a,b)=>a+b,0)/gaps.length : played ? 0 : 0;
 
-      let worstStreak = 0;
-      let cur = 0;
+      // worst bench streak
+      let worstStreak = 0, cur = 0;
       const playSet = new Set(roundsPlayed);
       for (let r = 1; r <= rounds; r++) {
-        if (playSet.has(r)) {
-          cur = 0;
-        } else {
-          cur++;
-          worstStreak = Math.max(worstStreak, cur);
-        }
+        if (playSet.has(r)) cur = 0; else { cur++; worstStreak = Math.max(worstStreak, cur); }
       }
 
-      const teammates = (teamSets.get(p.id)?.size) || 0;
-      const opponents = (oppSets.get(p.id)?.size) || 0;
+      const teammates = teamSets.get(p.id)?.size || 0;
+      const opponents = oppSets.get(p.id)?.size || 0;
 
       return {
-        id: p.id,
-        name: p.name,
-        gender: p.gender,
-        level: p.skill_level,
-        played,
-        benched,
-        avgBenchGap: isFinite(avgBenchGap) ? avgBenchGap : 0,
-        worstBenchStreak: worstStreak,
-        teammates,
-        opponents,
+        id: p.id, name: p.name, level: p.skill_level, gender: p.gender,
+        played, benched, avgBenchGap, worstBenchStreak: worstStreak,
+        teammates, opponents,
       };
     });
 
-    const plays = per.map((x) => x.played);
-    const meanPlays = plays.length ? plays.reduce((a, b) => a + b, 0) / plays.length : 0;
-    const stdDev = plays.length ? Math.sqrt(plays.reduce((a, b) => a + (b - meanPlays) ** 2, 0) / plays.length) : 0;
+    const plays = per.map(x => x.played);
+    const meanPlays = plays.length ? plays.reduce((a,b)=>a+b,0)/plays.length : 0;
+    const stdDev = plays.length ? Math.sqrt(plays.reduce((a,b)=>a+(b-meanPlays)**2,0)/plays.length) : 0;
     const spread = plays.length ? Math.max(...plays) - Math.min(...plays) : 0;
-    const fairnessRatio = plays.length ? Math.min(...plays) / Math.max(...plays || [1]) : 0;
+    const fairnessRatio = plays.length ? (Math.min(...plays)/Math.max(...plays||[1])) : 0;
 
-    const benchGaps = per.map((x) => x.avgBenchGap).filter((x) => isFinite(x));
-    const avgBenchGapOverall = benchGaps.length ? benchGaps.reduce((a, b) => a + b, 0) / benchGaps.length : 0;
-    const worstBenchStreakOverall = per.length ? Math.max(...per.map((x) => x.worstBenchStreak)) : 0;
+    const maxCourts = Math.max(1, ...diag.usedCourts, 4);
+    const avgUsed = diag.usedCourts.length ? diag.usedCourts.reduce((a,b)=>a+b,0)/diag.usedCourts.length : 0;
+    const utilization = maxCourts ? avgUsed/maxCourts : 0;
 
-    const maxCourts = Math.max(1, maxCourtsLocal);
-    const avgUsed = usedCourtsPerRoundLocal.length
-      ? usedCourtsPerRoundLocal.reduce((a, b) => a + b, 0) / usedCourtsPerRoundLocal.length
-      : 0;
-    const utilization = maxCourts ? avgUsed / maxCourts : 0;
-
-    const males = participants.filter((p) => p.gender === 'M').length;
-    const females = participants.filter((p) => p.gender === 'F').length;
-    const totalPart = participants.length || 1;
+    // bands coverage
     const band = (lvl) => (lvl <= 3 ? '1-3' : lvl <= 6 ? '4-6' : '7-10');
     const byBand = { '1-3': 0, '4-6': 0, '7-10': 0 };
     for (const p of participants) byBand[band(p.skill_level)]++;
 
-    const histPlays = {};
-    for (const v of plays) histPlays[v] = (histPlays[v] || 0) + 1;
-
-    const rep = per.map((x) => ({
-      id: x.id,
-      name: x.name,
-      teammateRepRatio: x.played ? Math.max(0, (x.played - x.teammates) / x.played) : 0,
-      opponentRepRatio: x.played ? Math.max(0, (x.played - x.opponents) / x.played) : 0,
-    }));
-
+    // CSV rows
     const csvRows = [
-      ['Name', 'Level', 'Played', 'Benched', 'AvgBenchGap', 'WorstBenchStreak', 'UniqueTeammates', 'UniqueOpponents'],
-    ].concat(
-      per
-        .sort((a, b) => b.played - a.played || a.name.localeCompare(b.name))
-        .map((x) => [
-          x.name,
-          x.level,
-          x.played,
-          x.benched,
-          x.avgBenchGap.toFixed(2),
-          x.worstBenchStreak,
-          x.teammates,
-          x.opponents,
-        ])
-    );
+      ['Name','Level','Played','Benched','AvgBenchGap','WorstBenchStreak','UniqueTeammates','UniqueOpponents'],
+      ...per
+        .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
+        .map(x => [x.name, x.level, x.played, x.benched, x.avgBenchGap.toFixed(2), x.worstBenchStreak, x.teammates, x.opponents]),
+    ];
 
-    const playsHistText = Object.keys(histPlays)
-      .sort((a, b) => Number(a) - Number(b))
-      .map((k) => k + ':' + histPlays[k])
-      .join('  ');
+    const playsHist = {};
+    for (const v of plays) playsHist[v] = (playsHist[v] || 0) + 1;
+    const playsHistText = Object.keys(playsHist).sort((a,b)=>Number(a)-Number(b)).map(k => `${k}:${playsHist[k]}`).join('  ');
 
     const copyText =
-      'Session Summary\n' +
-      `Rounds: ${rounds}\n` +
+      `Session Summary\n` +
+      `Rounds: ${rundown.rounds}\n` +
       `Participants: ${participants.length}\n` +
-      `Courts (avg used): ${avgUsed.toFixed(2)} / ${maxCourts}  (${fmtPct(utilization)})\n` +
-      `Gender: M ${males} • F ${females}\n` +
-      `Skill coverage: 1-3 ${fmtPct(byBand['1-3'] / totalPart)}, 4-6 ${fmtPct(byBand['4-6'] / totalPart)}, 7-10 ${fmtPct(byBand['7-10'] / totalPart)}\n\n` +
-      'Fairness\n' +
-      `Mean plays: ${meanPlays.toFixed(2)}   StdDev: ${stdDev.toFixed(2)}   Spread (max-min): ${spread}   Fairness ratio: ${fairnessRatio.toFixed(2)}\n` +
-      `Avg bench gap: ${avgBenchGapOverall.toFixed(2)} rounds\n` +
-      `Worst bench streak: ${worstBenchStreakOverall} rounds\n\n` +
+      `Courts (avg used): ${avgUsed.toFixed(2)} / ${maxCourts} (${(utilization*100).toFixed(1)}%)\n` +
+      `Skill coverage: 1-3 ${(byBand['1-3']/Math.max(participants.length,1)*100).toFixed(1)}% • 4-6 ${(byBand['4-6']/Math.max(participants.length,1)*100).toFixed(1)}% • 7-10 ${(byBand['7-10']/Math.max(participants.length,1)*100).toFixed(1)}%\n\n` +
+      `Fairness\n` +
+      `Mean plays: ${meanPlays.toFixed(2)}   StdDev: ${stdDev.toFixed(2)}   Spread: ${spread}   Fairness ratio: ${fairnessRatio.toFixed(2)}\n` +
+      `Avg bench gap: ${per.length ? (per.map(x=>x.avgBenchGap).reduce((a,b)=>a+b,0)/per.length).toFixed(2) : '0.00'} rounds\n` +
+      `Worst bench streak (overall): ${per.length ? Math.max(...per.map(x=>x.worstBenchStreak)) : 0}\n\n` +
       `Plays histogram: ${playsHistText}\n`;
 
     return {
-      rounds,
-      participantsCount: participants.length,
-      males,
-      females,
+      per, csvRows, copyText,
+      rounds: rundown.rounds, participantsCount: participants.length,
+      males: participants.filter(p=>p.gender==='M').length,
+      females: participants.filter(p=>p.gender==='F').length,
+      maxCourts, avgUsed, utilization,
+      meanPlays, stdDev, spread, fairnessRatio,
       bands: byBand,
-      totalPart,
-      maxCourts,
-      avgUsed,
-      utilization,
-      meanPlays,
-      stdDev,
-      spread,
-      fairnessRatio,
-      avgBenchGapOverall,
-      worstBenchStreakOverall,
-      perPlayer: per,
-      repetition: rep,
-      csvRows,
-      copyText,
-      usedCourtsPerRound: usedCourtsPerRoundLocal,
     };
-  };
+  }
 
-  const downloadCSV = (rows, filename = 'session-summary.csv') => {
-    const csv = rows
-      .map((r) =>
-        r
-          .map((v) => {
-            const s = String(v ?? '');
-            return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-          })
-          .join(',')
-      )
-      .join('\n');
+  function downloadCSV(rows, filename = 'session-summary.csv') {
+    const csv = rows.map(r =>
+      r.map(v => {
+        const s = String(v ?? '');
+        return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+      }).join(',')
+    ).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
-  };
+  }
 
-  const copyToClipboard = async (text) => {
+  async function copyToClipboard(text) {
     try {
       await navigator.clipboard.writeText(text);
-      alert('Summary copied to clipboard.');
-    } catch {
-      alert('Copy failed. Select and copy manually.');
-    }
-  };
+      alert('Summary copied to clipboard');
+    } catch { alert('Copy failed'); }
+  }
 
-  const RundownModal = () => {
+  function RundownModal() {
     const S = buildSmartSummary();
-    const [tab, setTab] = useState('summary'); // summary | diagnostics
-    const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
-
-    const cov13 = fmtPct(((S.bands['1-3'] || 0) / (S.totalPart || 1)));
-    const cov46 = fmtPct(((S.bands['4-6'] || 0) / (S.totalPart || 1)));
-    const cov710 = fmtPct(((S.bands['7-10'] || 0) / (S.totalPart || 1)));
+    const [tab, setTab] = useState('summary');
 
     return (
       <div className="modal-backdrop">
         <div className="modal glass">
           <div className="tabs">
-            <button className={`tab ${tab === 'summary' ? 'active' : ''}`} onClick={() => setTab('summary')}>
-              Smart Session Summary
-            </button>
-            {isAdmin && (
-              <button className={`tab ${tab === 'diagnostics' ? 'active' : ''}`} onClick={() => setTab('diagnostics')}>
-                System Diagnostics
-              </button>
-            )}
+            <button className={`tab ${tab==='summary'?'active':''}`} onClick={()=>setTab('summary')}>Smart Session Summary</button>
+            <button className={`tab ${tab==='diagnostics'?'active':''}`} onClick={()=>setTab('diagnostics')}>System Diagnostics</button>
           </div>
 
           {tab === 'summary' && (
@@ -1151,17 +902,12 @@ export default function App() {
                   <h4>Overview</h4>
                   <div>Rounds: <b>{S.rounds}</b></div>
                   <div>Participants: <b>{S.participantsCount}</b> (M {S.males} • F {S.females})</div>
-                  <div>Courts (avg used): <b>{S.avgUsed.toFixed(2)}</b> / {S.maxCourts} ({fmtPct(S.utilization)})</div>
-                  <div>Skill coverage: 1-3 <b>{cov13}</b> • 4-6 <b>{cov46}</b> • 7-10 <b>{cov710}</b></div>
+                  <div>Courts (avg used): <b>{S.avgUsed.toFixed(2)}</b> / {S.maxCourts} ({(S.utilization*100).toFixed(1)}%)</div>
+                  <div>Skill coverage: 1-3 <b>{((S.bands['1-3']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b> • 4-6 <b>{((S.bands['4-6']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b> • 7-10 <b>{((S.bands['7-10']/Math.max(S.participantsCount,1))*100).toFixed(1)}%</b></div>
                 </div>
                 <div>
                   <h4>Fairness</h4>
-                  <div>
-                    Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev: <b>{S.stdDev.toFixed(2)}</b> &nbsp;
-                    Spread: <b>{S.spread}</b> &nbsp; Fairness ratio: <b>{S.fairnessRatio.toFixed(2)}</b>
-                  </div>
-                  <div>Avg bench gap: <b>{S.avgBenchGapOverall.toFixed(2)}</b> rounds</div>
-                  <div>Worst bench streak: <b>{S.worstBenchStreakOverall}</b> rounds</div>
+                  <div>Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev: <b>{S.stdDev.toFixed(2)}</b> &nbsp; Spread: <b>{S.spread}</b> &nbsp; Fairness ratio: <b>{S.fairnessRatio.toFixed(2)}</b></div>
                 </div>
               </div>
 
@@ -1180,9 +926,9 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {S.perPlayer
-                      .sort((a, b) => b.played - a.played || a.name.localeCompare(b.name))
-                      .map((x) => (
+                    {S.per
+                      .sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name))
+                      .map(x => (
                         <tr key={x.id}>
                           <td>{x.name}</td>
                           <td className="center">{x.level}</td>
@@ -1206,7 +952,7 @@ export default function App() {
             </>
           )}
 
-          {tab === 'diagnostics' && isAdmin && (
+          {tab === 'diagnostics' && (
             <>
               <div className="two-col">
                 <div>
@@ -1216,25 +962,17 @@ export default function App() {
                     Avg build time:{' '}
                     <b>
                       {(
-                        ((diag.roundBuildTimes || []).reduce((a, b) => a + b, 0) /
-                          Math.max(1, (diag.roundBuildTimes || []).length))
+                        ((diag.roundBuildTimes || []).reduce((a,b)=>a+b,0) / Math.max(1,(diag.roundBuildTimes||[]).length))
                       ).toFixed(1)}
-                    </b>{' '}
-                    ms
+                    </b>{' '}ms
                   </div>
                   <div>Courts used per round: {(diag.usedCourts || []).join(', ') || '-'}</div>
                 </div>
                 <div>
                   <h4>Match Quality</h4>
-                  <div>
-                    Avg team imbalance per round (abs(avg1 - avg2)): {(diag.teamImbalances || []).join(', ') || '-'}
-                  </div>
-                  <div>
-                    Avg skill span per match (round avg): {(diag.spanPerMatch || []).join(', ') || '-'}
-                  </div>
-                  <div>
-                    Out-of-band players count per round (+/- 2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}
-                  </div>
+                  <div>Avg team imbalance per round: {(diag.teamImbalances || []).join(', ') || '-'}</div>
+                  <div>Avg skill span per match (round avg): {(diag.spanPerMatch || []).join(', ') || '-'}</div>
+                  <div>Out-of-band players / round (+/-2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}</div>
                 </div>
               </div>
 
@@ -1246,139 +984,133 @@ export default function App() {
         </div>
       </div>
     );
-  };
+  }
 
-  /* ============================================================================
-     Toolbar
-  ============================================================================ */
-  const Toolbar = () => (
-    <div className="toolbar glass">
-      <div className="toolbar-left">
-        <button className="btn primary" onClick={onStartNight}>Start Night</button>
-        <button className="btn" onClick={onPause}>Pause</button>
-        <button className="btn" onClick={onResume}>Resume</button>
-        <button className="btn danger" onClick={onEndNight}>End Night</button>
-        <button className="btn" onClick={onNextRound}>Next Round</button>
-        <button className="btn" onClick={openDisplay}>Open Display</button>
-        {isAdmin ? (
-          <button className="btn" onClick={adminLogout}>Admin (On)</button>
-        ) : (
-          <button className="btn" onClick={adminLogin}>Admin</button>
-        )}
-        <button className="btn ghost" onClick={() => setShowSettings(true)}>Settings</button>
-      </div>
-      <div className={`toolbar-right time ${isWarn ? 'warn' : ''}`}>
-        {ui === 'session' ? `Round ${round || '-'} • ${formatTime(timeLeft)}` : ui === 'display' ? 'Display Mode' : 'Not running'}
-      </div>
-    </div>
-  );
-
-  const DisplayView = () => (
-    <div className="display page">
-      <div className="display-head">
-        <div className="display-title">Badminton Club Night</div>
-        <div className="display-meta">
-          <span>Round {round || '-'}</span>
-          <span>•</span>
-          <span className={`bigtime ${isWarn ? 'warn' : ''}`}>{formatTime(timeLeft)}</span>
-          <span>•</span>
-          <span>{displayPresentCount} present</span>
+  /* ------------ Display View ------------ */
+  function DisplayView() {
+    return (
+      <div className="display page">
+        <div className="display-head">
+          <div className="display-title">Badminton Club Night</div>
+          <div className="display-meta">
+            <span>Round {round || '-'}</span>
+            <span>•</span>
+            <span className={`bigtime ${isWarn ? 'warn' : ''}`}>{formatTime(timerLeft)}</span>
+            <span>•</span>
+            <span>{present.length} present</span>
+            <span>•</span>
+            <span>Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}</span>
+          </div>
+          <div className="display-hint">Press F for fullscreen</div>
         </div>
-        <div className="display-hint">Press F for fullscreen</div>
-      </div>
 
-      <div className="display-courts">
-        {!displaySeen ? (
-          <div className="muted p-20">Waiting for controller...</div>
-        ) : matches.length === 0 ? (
-          <div className="muted p-20">Waiting for matches...</div>
-        ) : (
-          matches.map((m) => <Court key={m.court} m={m} large />)
-        )}
+        <div className="display-courts">
+          {matches.length === 0 ? (
+            <div className="muted p-20">Waiting for matches…</div>
+          ) : (
+            matches.map(m => <Court key={m.court} m={m} large />)
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
-  /* ============================================================================
-     Final render
-  ============================================================================ */
+  /* ------------ Render ------------ */
+  if (isDisplay) {
+    useEffect(() => {
+      const onKey = (e) => {
+        if (e.key === 'f' || e.key === 'F') {
+          const el = document.documentElement;
+          if (!document.fullscreenElement) el.requestFullscreen?.(); else document.exitFullscreen?.();
+        }
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, []);
+    return <DisplayView />;
+  }
+
   return (
     <div className="page">
-      <Toolbar />
-
-      {ui === 'home' && (
-        <div className="welcome fade-in">
-          <h2>Welcome to Badminton Club Night</h2>
-          <p>
-            Use <b>Start Night</b> to begin check-in and matchmaking. Open <b>Display</b> on a second screen to show
-            courts and timer.
-          </p>
+      {/* Toolbar */}
+      <div className="toolbar glass">
+        <div className="toolbar-left">
+          <button className="btn primary" onClick={onStartNight}>Start Night</button>
+          <button className="btn" onClick={onPause} disabled={!running}>Pause</button>
+          <button className="btn" onClick={onResume}>Resume</button>
+          <button className="btn" onClick={onNextRound}>Next Round</button>
+          <button className="btn danger" onClick={onEndNight}>End Night</button>
+          <button className="btn" onClick={openDisplay}>Open Display</button>
+          <button className="btn" onClick={toggleMode}>Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}</button>
+          <button className="btn ghost" onClick={openSettings}>Settings</button>
+          {isAdmin ? (
+            <button className="btn" onClick={adminLogout}>Admin (On)</button>
+          ) : (
+            <button className="btn" onClick={adminLogin}>Admin</button>
+          )}
         </div>
-      )}
+        <div className={`toolbar-right time ${isWarn ? 'warn' : ''}`}>
+          {round > 0 ? `Round ${round} • ${formatTime(timerLeft)}` : 'Not running'}
+        </div>
+      </div>
 
-      {ui === 'session' && (
-        <>
-          <div id="courts" className="courts-grid">
-            {matches.map((m) => (
-              <Court key={m.court} m={m} />
+      {/* Courts */}
+      <div id="courts" className="courts-grid">
+        {matches.map(m => <Court key={m.court} m={m} />)}
+        {matches.length === 0 && <div className="muted p-12">No matches yet. Click <b>Resume</b> to build.</div>}
+      </div>
+
+      {/* Benched strip */}
+      <div className="panel glass">
+        <div className="panel-head"><h3>Benched Players</h3></div>
+        {benched.length === 0 ? (
+          <div className="muted p-8">No one benched this round.</div>
+        ) : (
+          <div className="bench-row">
+            {benched.map(p => (
+              <div className="tag" key={p.id} title={`Lvl ${p.skill_level}`}>
+                <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                {p.name}
+              </div>
             ))}
           </div>
+        )}
+      </div>
 
-          {/* NEW: Benched Players strip (horizontal) */}
-          <div className="panel glass">
-            <div className="panel-head">
-              <h3>Benched Players</h3>
-            </div>
-            {benchedThisRound.length === 0 ? (
-              <div className="muted p-8">No one benched this round.</div>
-            ) : (
-              <div className="bench-row">
-                {benchedThisRound.map((p) => (
-                  <div className="tag" key={p.id} title={`Lvl ${p.skill_level}`}>
-                    <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
-                    {p.name}
-                  </div>
-                ))}
-              </div>
-            )}
+      {/* Rosters */}
+      <div className="lists-grid">
+        <div className="list-col">
+          <div className="list-head">
+            All Players <span className="badge">{notPresent.length}</span>
           </div>
-
-          <div className="lists-grid">
-            <div className="list-col">
-              <div className="list-head">
-                All Players <span className="badge">{notPresent.length}</span>
-              </div>
-              <div id="allList" className="list-box glass">
-                {notPresent.map(personRow)}
-              </div>
-            </div>
-            <div className="list-col">
-              <div className="list-head">
-                Present Today <span className="badge">{present.length}</span>
-              </div>
-              <div id="presentList" className="list-box glass">
-                {present.map(personRow)}
-              </div>
-            </div>
+          <div id="allList" className="list-box glass">
+            {notPresent.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} />)}
           </div>
+        </div>
+        <div className="list-col">
+          <div className="list-head">
+            Present Today <span className="badge">{present.length}</span>
+          </div>
+          <div id="presentList" className="list-box glass">
+            {present.map(p => <RowPlayer key={p.id} p={p} onDoubleClick={() => togglePresent(p)} />)}
+          </div>
+        </div>
+      </div>
 
-          <AdminPanel />
-        </>
-      )}
+      {/* Admin controls */}
+      <AdminPanel />
 
-      {ui === 'display' && <DisplayView />}
-
+      {/* Settings / Summary */}
       {showSettings && <SettingsPanel />}
       {showRundown && <RundownModal />}
     </div>
   );
 }
 
-/* ============================================================================
-   Utilities
-============================================================================ */
-function getInitialUi() {
+/* ========================================================================== */
+/* Utilities                                                                  */
+/* ========================================================================== */
+function getInitialUiIsDisplay() {
   const url = new URL(window.location.href);
-  if (url.searchParams.get('display') === '1') return 'display';
-  return 'home';
+  return url.searchParams.get('display') === '1';
 }
