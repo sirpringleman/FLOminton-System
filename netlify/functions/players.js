@@ -1,117 +1,112 @@
-// netlify/functions/players.js  (CommonJS)
-const { createClient } = require('@supabase/supabase-js')
+// netlify/functions/players.js
+import { createClient } from '@supabase/supabase-js';
 
-const url = process.env.SUPABASE_URL
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE
-const ADMIN_KEY = process.env.ADMIN_KEY || '' // set in Netlify env vars
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+const ADMIN_KEY = process.env.ADMIN_KEY || ''; // set in Netlify > Site settings > Environment
 
-const supabase = createClient(url, serviceKey, {
-  auth: { persistSession: false, autoRefreshToken: false },
-})
-
-function isAdmin(event) {
-  const h = event.headers || {}
-  // headers may be lowercase in Netlify
-  const key = h['x-admin-key'] || h['X-Admin-Key'] || ''
-  return ADMIN_KEY && key === ADMIN_KEY
+if (!SUPABASE_URL || !SERVICE_ROLE) {
+  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE');
 }
-const JSON_HEADERS = {
+
+const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { persistSession: false } });
+
+const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type,X-Admin-Key',
-  'Content-Type': 'application/json',
-}
+  'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Key',
+};
 
-exports.handler = async (event) => {
+const json = (status, body) => ({
+  statusCode: status,
+  headers: { 'Content-Type': 'application/json', ...corsHeaders },
+  body: JSON.stringify(body),
+});
+
+export async function handler(event) {
+  // CORS preflight
+  if (event.httpMethod === 'OPTIONS') {
+    return { statusCode: 200, headers: corsHeaders, body: '' };
+  }
+
+  const method = event.httpMethod.toUpperCase();
+
   try {
-    const method = event.httpMethod
-    if (method === 'OPTIONS') {
-      return { statusCode: 200, headers: JSON_HEADERS, body: '' }
-    }
-
-    // GET: public – list players
+    // GET: list all players (public)
     if (method === 'GET') {
-      const { data, error } = await supabase
-        .from('players')
-        .select('*')
-        .order('name', { ascending: true })
-      if (error) throw error
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify(data || []) }
+      const { data, error } = await supabase.from('players').select('*').order('name');
+      if (error) throw error;
+      return json(200, data || []);
     }
 
-    // PATCH: partial updates
+    // PATCH: update one or many players
+    // Public whitelist: is_present, bench_count, last_played_round
     if (method === 'PATCH') {
-      let body = {}
-      try { body = JSON.parse(event.body || '{}') } catch {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Invalid JSON' }) }
-      }
-      const updates = Array.isArray(body.updates) ? body.updates : []
-      if (!updates.length) {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'No updates provided' }) }
-      }
+      const body = JSON.parse(event.body || '{}');
+      const updates = Array.isArray(body.updates) ? body.updates : [];
+      if (!updates.length) return json(200, { ok: true, message: 'No updates' });
 
-      // Determine if this patch touches admin-only fields
-      const PUBLIC_FIELDS = new Set(['is_present', 'bench_count', 'last_played_round'])
-      const touchesAdminField = updates.some(u => {
-        const keys = Object.keys(u || {})
-        return keys.some(k => k !== 'id' && !PUBLIC_FIELDS.has(k))
-      })
-      if (touchesAdminField && !isAdmin(event)) {
-        return { statusCode: 403, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Admin key required' }) }
-      }
+      const adminKey = event.headers['x-admin-key'] || event.headers['X-Admin-Key'];
+      const publicAllowed = new Set(['is_present', 'bench_count', 'last_played_round']);
 
-      // Apply updates one-by-one (clear errors if any)
-      const errors = []
+      const results = [];
       for (const u of updates) {
-        const { id, ...fields } = u || {}
-        if (!id) { errors.push({ id, message: 'Missing id' }); continue }
-        const { error } = await supabase.from('players').update(fields).eq('id', id)
-        if (error) errors.push({ id, message: error.message })
+        const { id, ...fields } = u || {};
+        if (!id || !fields || !Object.keys(fields).length) continue;
+
+        const keys = Object.keys(fields);
+        const allPublic = keys.every((k) => publicAllowed.has(k));
+
+        // If not all fields are in the safe public list, require admin
+        if (!allPublic && adminKey !== ADMIN_KEY) {
+          results.push({ id, ok: false, error: 'Forbidden (admin required)' });
+          continue;
+        }
+
+        const { error } = await supabase.from('players').update(fields).eq('id', id);
+        if (error) {
+          results.push({ id, ok: false, error: error.message || String(error) });
+        } else {
+          results.push({ id, ok: true });
+        }
       }
-      if (errors.length) {
-        return { statusCode: 207, headers: JSON_HEADERS, body: JSON.stringify({ ok: false, errors }) }
-      }
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) }
+
+      const anyError = results.some((r) => r.ok === false);
+      return json(anyError ? 207 : 200, { ok: !anyError, results });
     }
 
-    // POST: upsert (add/edit many) – admin only
+    // POST: upsert players (admin only)
     if (method === 'POST') {
-      if (!isAdmin(event)) {
-        return { statusCode: 403, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Admin key required' }) }
-      }
-      let body = {}
-      try { body = JSON.parse(event.body || '{}') } catch {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Invalid JSON' }) }
-      }
-      const players = Array.isArray(body.players) ? body.players : []
-      if (!players.length) {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'No players provided' }) }
-      }
-      const { error } = await supabase.from('players').upsert(players)
-      if (error) throw error
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) }
+      const adminKey = event.headers['x-admin-key'] || event.headers['X-Admin-Key'];
+      if (adminKey !== ADMIN_KEY) return json(401, { message: 'Unauthorized' });
+
+      const body = JSON.parse(event.body || '{}');
+      const players = Array.isArray(body.players) ? body.players : [];
+      if (!players.length) return json(400, { message: 'No players provided' });
+
+      const { error } = await supabase.from('players').upsert(players, { onConflict: 'id' });
+      if (error) throw error;
+      return json(200, { ok: true });
     }
 
-    // DELETE: remove players – admin only
+    // DELETE: remove players (admin only)
     if (method === 'DELETE') {
-      if (!isAdmin(event)) {
-        return { statusCode: 403, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Admin key required' }) }
-      }
-      let body = {}
-      try { body = JSON.parse(event.body || '{}') } catch {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Invalid JSON' }) }
-      }
-      const ids = Array.isArray(body.ids) ? body.ids : []
-      if (!ids.length) {
-        return { statusCode: 400, headers: JSON_HEADERS, body: JSON.stringify({ message: 'No ids provided' }) }
-      }
-      const { error } = await supabase.from('players').delete().in('id', ids)
-      if (error) throw error
-      return { statusCode: 200, headers: JSON_HEADERS, body: JSON.stringify({ ok: true }) }
+      const adminKey = event.headers['x-admin-key'] || event.headers['X-Admin-Key'];
+      if (adminKey !== ADMIN_KEY) return json(401, { message: 'Unauthorized' });
+
+      const body = JSON.parse(event.body || '{}');
+      const ids = Array.isArray(body.ids) ? body.ids : [];
+      if (!ids.length) return json(400, { message: 'No ids provided' });
+
+      const { error } = await supabase.from('players').delete().in('id', ids);
+      if (error) throw error;
+      return json(200, { ok: true });
     }
 
-    return { statusCode: 405, headers: JSON_HEADERS, body: JSON.stringify({ message: 'Method not allowed' }) }
-  } catch (e) {
-    return { statusCode: 500, headers: JSON_HEADERS, body: JSON.stringify({ message: e.message || String(e) }) }
+    return json(405, { message: 'Method not allowed' });
+  } catch (err) {
+    console.error('Function error:', err);
+    // Surface a clear error so the browser alert is useful
+    return json(500, { message: err?.message || String(err) });
   }
 }
