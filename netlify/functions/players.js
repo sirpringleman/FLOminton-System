@@ -1,4 +1,8 @@
 // netlify/functions/players.js
+// Tolerates BOTH shapes:
+//   { updates: [ { id, fields: { is_present: true } } ] }
+//   { updates: [ { id, is_present: true } ] }
+
 import { createClient } from '@supabase/supabase-js'
 
 const url = process.env.SUPABASE_URL
@@ -12,61 +16,103 @@ const CORS = {
   'access-control-allow-headers': 'content-type,authorization',
   'content-type': 'application/json'
 }
+
 const J = (status, data) => new Response(JSON.stringify(data), { status, headers: CORS })
 
 export default async (req, ctx) => {
   try {
-    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
+    const method = req.method
+
+    // preflight
+    if (method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS })
+    }
 
     if (!url || !key) {
-      console.error('[players] Missing SUPABASE_URL or KEY')
+      console.error('[players] missing env')
       return J(500, { error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE/ANON_KEY' })
     }
 
-    if (req.method === 'GET') {
-      const { data, error } = await supabase.from('players').select('*').order('name', { ascending: true })
+    /* ======================= GET ======================= */
+    if (method === 'GET') {
+      const { data, error } = await supabase
+        .from('players')
+        .select('*')
+        .order('name', { ascending: true })
+
       if (error) {
-        console.error('[players][GET] supabase error:', error)
-        return J(500, { error: String(error.message || error) })
+        console.error('[players][GET]', error)
+        return J(500, { error: error.message || String(error) })
       }
       return J(200, data || [])
     }
 
-    if (req.method === 'PATCH') {
+    /* ======================= PATCH ======================= */
+    if (method === 'PATCH') {
       let body = {}
       try { body = await req.json() } catch {}
-      const updates = Array.isArray(body?.updates) ? body.updates : []
-      if (!updates.length) return J(400, { error: 'Missing updates' })
+      const incoming = Array.isArray(body?.updates) ? body.updates : []
+
+      if (!incoming.length) {
+        return J(400, { error: 'Missing updates array' })
+      }
 
       const results = []
-      for (const u of updates) {
-        const { id, fields } = u || {}
-        if (!id) continue
-        try {
-          const { data, error } = await supabase
-            .from('players')
-            .update(fields || {})
-            .eq('id', id)
-            .select()
-            .single()
-          if (error) {
-            console.error('[players][PATCH] update failed:', { id, fields, error })
-            return J(500, { error: error.message || String(error), id, fields })
-          }
-          results.push(data)
-        } catch (e) {
-          console.error('[players][PATCH] exception:', { id, fields, e })
-          return J(500, { error: String(e?.message || e), id, fields })
+
+      for (const u of incoming) {
+        if (!u || !u.id) continue
+
+        // accept both shapes
+        // shape A: { id, fields: {...} }
+        // shape B: { id, is_present: true, bench_count: 2, ... }
+        let fields = {}
+        if (u.fields && typeof u.fields === 'object') {
+          fields = u.fields
+        } else {
+          // copy all props except id/fields into fields
+          const { id, fields: _ignored, ...rest } = u
+          fields = rest
         }
+
+        // if still no fields, skip
+        if (!fields || Object.keys(fields).length === 0) {
+          console.warn('[players][PATCH] no fields for id', u.id)
+          continue
+        }
+
+        const { data, error } = await supabase
+          .from('players')
+          .update(fields)
+          .eq('id', u.id)
+          .select()
+          .maybeSingle() // tolerate 0 rows
+        if (error) {
+          console.error('[players][PATCH] update failed:', {
+            id: u.id,
+            fields,
+            error
+          })
+          return J(500, {
+            error: error.message || String(error),
+            id: u.id,
+            fields
+          })
+        }
+
+        results.push(data)
       }
+
       return J(200, { ok: true, count: results.length, rows: results })
     }
 
-    if (req.method === 'POST') {
+    /* ======================= POST (upsert) ======================= */
+    if (method === 'POST') {
       let body = {}
       try { body = await req.json() } catch {}
       const players = Array.isArray(body?.players) ? body.players : []
-      if (!players.length) return J(400, { error: 'No players provided' })
+      if (!players.length) {
+        return J(400, { error: 'No players provided' })
+      }
 
       const { data, error } = await supabase
         .from('players')
@@ -77,10 +123,12 @@ export default async (req, ctx) => {
         console.error('[players][POST] upsert error:', error)
         return J(500, { error: error.message || String(error) })
       }
+
       return J(200, { ok: true, rows: data })
     }
 
-    if (req.method === 'DELETE') {
+    /* ======================= DELETE ======================= */
+    if (method === 'DELETE') {
       let body = {}
       try { body = await req.json() } catch {}
       const id = body?.id
