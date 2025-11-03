@@ -1,27 +1,17 @@
 /* logic.js
-   FLOminton Matchmaking (Merged Deluxe, untrimmed)
+   FLOminton Matchmaking
 
    Modes:
    - WINDOW: group quads by skill window (start ±2; expand only if courts can’t be filled)
    - BAND  : fixed bands {1–2, 3–4, 5–6, 7–8, 9–10}; allow band±1; expand further only if needed
 
    Team split in BOTH modes:
-   - Choose the split with the smallest team-average difference among:
-       (p1,p4) vs (p2,p3)
-       (p1,p3) vs (p2,p4)
-       (p1,p2) vs (p3,p4)
+   - Balanced pairing: weak+high vs weak+high (p1,p4) vs (p2,p3)
 
-   Fairness (selection):
+   Fairness (both modes):
    - Select players by highest bench_count, then oldest last_played_round, then random
    - Hard guard: no one benches twice before everyone benches once
    - Avoid consecutive benches where possible
-
-   Analytics (for Smart Summary & Diagnostics):
-   - fairnessStats(playersPresent)
-   - roundDiagnostics(matches)   -> build time, court use, avg diffs, spans
-   - perPlayerUniq(history)      -> unique teammates/opponents per player
-   - perPlayerUniqLastN(history) -> same but for last N rounds
-   - countBackToBackBenches(benchedLog)
 */
 
 /* ========================= Tunables ========================= */
@@ -41,18 +31,30 @@ const BANDS = [
 ];
 const MAX_BAND_EXPANSION = 4;      // allow beyond ±1 only if courts would fail
 
-// Rematch memory (bookkeeping only; doesn’t override fairness/skill constraints)
+// Rematch memory (soft nudge only; doesn’t override fairness/skill constraints)
 const REMATCH_MEMORY  = 4;
+const REMATCH_PENALTY = 1;
 
-/* ========================= Mode persistence (optional) ========================= */
-let __matchMode = safeGetLocal('flomatch_mode') || MATCH_MODES.WINDOW;
+// Fairness guard
+const MAX_CONSECUTIVE_BENCH = 1;
+
+/* ========================= Mode storage ========================= */
+let currentMode = safeGetLocal('match_mode') || MATCH_MODES.WINDOW;
+
 export function setMatchMode(mode) {
-  __matchMode = (mode === MATCH_MODES.BAND) ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
-  safeSetLocal('flomatch_mode', __matchMode);
+  currentMode = mode === MATCH_MODES.BAND ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
+  safeSetLocal('match_mode', currentMode);
 }
-export function getMatchMode() { return __matchMode; }
-function safeGetLocal(k){ try{return localStorage.getItem(k);}catch{return null;} }
-function safeSetLocal(k,v){ try{localStorage.setItem(k,v);}catch{} }
+export function getMatchMode() {
+  return currentMode;
+}
+
+function safeGetLocal(k) {
+  try { return localStorage.getItem(k); } catch { return null; }
+}
+function safeSetLocal(k, v) {
+  try { localStorage.setItem(k, v); } catch {}
+}
 
 /* ========================= Utilities ========================= */
 const by = (fn) => (a, b) => {
@@ -61,20 +63,22 @@ const by = (fn) => (a, b) => {
   if (x > y) return 1;
   return 0;
 };
-export function avg(a){ return a.reduce((s,x)=>s+x,0)/(a.length||1); }
-export function stddev(a){
-  if(a.length<=1) return 0;
-  const m=avg(a); const v=avg(a.map(x=>(x-m)*(x-m)));
-  return Math.sqrt(v);
-}
-export function formatTime(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds || 0));
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+const shuffle = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
 }
 
-/* ========================= Fairness selection ========================= */
+/* ========================= Public API ========================= */
+
 /**
  * Select 4*courts players with fairness hard-guards.
  * @param {Array} present - [{id, name, skill_level, is_present, bench_count, last_played_round}]
@@ -88,7 +92,7 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   if (present.length < 4) return { playing: [], benched: present.slice() };
   if (NEED <= 0) return { playing: [], benched: present.slice() };
 
-  // Priority: higher bench_count first; then older last_played_round; tie random
+  // Fairness priority: higher bench_count first; then older last_played_round; tie random
   const ranked = present.slice().sort((a, b) => {
     const t =
       (b.bench_count || 0) - (a.bench_count || 0) ||
@@ -107,32 +111,37 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   const toBenchCount = Math.max(0, present.length - NEED);
   if (toBenchCount === 0) return { playing: ranked.slice(0, NEED), benched: [] };
 
+  // Build bench from the bottom of priority while respecting eligibility/avoid-consecutive
   const reversed = ranked.slice().reverse();
   const bench = [];
-  const pushIf = (pred) => {
+
+  const tryBench = (pred) => {
     for (const p of reversed) {
       if (bench.length >= toBenchCount) break;
       if (bench.find(x => x.id === p.id)) continue;
       if (pred(p)) bench.push(p);
     }
   };
+
   // a) eligible & not consecutive
-  pushIf(p => benchEligible.has(p.id) && !avoidConsecutive.has(p.id));
+  tryBench(p => benchEligible.has(p.id) && !avoidConsecutive.has(p.id));
   // b) eligible (even if consecutive)
-  pushIf(p => benchEligible.has(p.id));
+  tryBench(p => benchEligible.has(p.id));
   // c) not consecutive
-  pushIf(p => !avoidConsecutive.has(p.id));
+  tryBench(p => !avoidConsecutive.has(p.id));
   // d) anyone
-  pushIf(_ => true);
+  tryBench(_ => true);
 
   // Try to swap to avoid consecutive benches if possible
-  for (let i = 0; i < bench.length; i++) {
-    const p = bench[i];
-    if (avoidConsecutive.has(p.id)) {
-      const swap = ranked.find(x =>
-        !bench.find(b => b.id === x.id) && !avoidConsecutive.has(x.id)
-      );
-      if (swap) bench[i] = swap;
+  if (MAX_CONSECUTIVE_BENCH > 0) {
+    for (let i = 0; i < bench.length; i++) {
+      const p = bench[i];
+      if (avoidConsecutive.has(p.id)) {
+        const swap = ranked.find(x =>
+          !bench.find(b => b.id === x.id) && !avoidConsecutive.has(x.id)
+        );
+        if (swap) bench[i] = swap;
+      }
     }
   }
 
@@ -141,62 +150,55 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   return { playing, benched: bench };
 }
 
-/* ========================= Match building (Band & Window) ========================= */
-
-export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsCount = 4, mode = getMatchMode()) {
+/**
+ * Build matches from selected players using the active mode.
+ * @param {Array} players - length divisible by 4
+ * @param {Map<string, Array<number>>} teammateHistory
+ * @param {number} courtsCount
+ * @returns {Array} matches [{court, team1:[p,p], team2:[p,p], avg1, avg2}]
+ */
+export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsCount = 4) {
   if (!players || players.length < 4) return [];
   const sorted = players.slice().sort(by(p => p.skill_level));
   const totalCourts = Math.floor(sorted.length / 4);
 
   let groups = [];
-  if (mode === MATCH_MODES.BAND) {
+  if (currentMode === MATCH_MODES.BAND) {
     groups = makeGroupsBand(sorted, totalCourts);
   } else {
     groups = makeGroupsWindow(sorted, totalCourts);
   }
   if (groups.length !== totalCourts) {
     // last resort: simple chunk (still sorted ⇒ skill-proximal)
-    groups = [];
-    for (let i=0; i<sorted.length && groups.length<totalCourts; i+=4){
-      groups.push(sorted.slice(i, i+4));
-    }
+    groups = chunk(sorted, 4).slice(0, totalCourts);
   }
 
+  // Build matches with BALANCED PAIRING: (p1,p4) vs (p2,p3)
   const matches = [];
   let courtNo = 1;
+
   for (const g of groups) {
     const quad = g.slice().sort(by(p => p.skill_level)); // [p1<=p2<=p3<=p4]
-    const best = bestTeamSplit(quad); // {t1:[...], t2:[...], avg1, avg2}
-    addPair(best.t1[0], best.t1[1], teammateHistory);
-    addPair(best.t2[0], best.t2[1], teammateHistory);
+    const team1 = [quad[0], quad[3]];
+    const team2 = [quad[1], quad[2]];
+
+    addPair(team1[0], team1[1], teammateHistory);
+    addPair(team2[0], team2[1], teammateHistory);
     trimHistory(teammateHistory, REMATCH_MEMORY);
 
     matches.push({
       court: courtNo++,
-      team1: best.t1,
-      team2: best.t2,
-      avg1: best.avg1,
-      avg2: best.avg2,
+      team1,
+      team2,
+      avg1: (team1[0].skill_level + team1[1].skill_level) / 2,
+      avg2: (team2[0].skill_level + team2[1].skill_level) / 2,
     });
   }
+
   return matches;
 }
 
-function bestTeamSplit(quad){
-  // quad sorted by skill asc: [p1,p2,p3,p4]
-  const [a,b,c,d] = quad;
-  const candidates = [
-    [[a,d],[b,c]],
-    [[a,c],[b,d]],
-    [[a,b],[c,d]],
-  ].map(([t1,t2])=>{
-    const avg1=(t1[0].skill_level+t1[1].skill_level)/2;
-    const avg2=(t2[0].skill_level+t2[1].skill_level)/2;
-    return { t1, t2, avg1, avg2, diff: Math.abs(avg1-avg2) };
-  });
-  candidates.sort(by(x=>x.diff));
-  return candidates[0];
-}
+/* ========================= Grouping algorithms ========================= */
 
 // WINDOW MODE: group quads where (max-min) ≤ window; expand window only if needed
 function makeGroupsWindow(sortedPlayers, courtCount) {
@@ -206,6 +208,7 @@ function makeGroupsWindow(sortedPlayers, courtCount) {
   }
   return [];
 }
+
 function greedyWindowGroups(sortedPlayers, courtCount, window) {
   const used = new Set();
   const groups = [];
@@ -213,33 +216,42 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
   for (let i = 0; i < sortedPlayers.length && groups.length < courtCount; i++) {
     if (used.has(i)) continue;
 
+    // try to pick 4 within window from i outward
     const pickIdx = [i];
     const minSkill = sortedPlayers[i].skill_level;
-    // try forward
+
+    // forward sweep
     for (let j = i + 1; j < sortedPlayers.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
       const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) pickIdx.push(j);
-      else break;
+      if (s - minSkill <= window) {
+        if (!pickIdx.includes(j)) pickIdx.push(j);  // <-- prevent duplicates
+      } else {
+        break;
+      }
     }
-    // try from end (still respecting window)
+
+    // backward sweep (from end) to fill remaining slots
     for (let j = sortedPlayers.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
+      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
       const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) pickIdx.push(j);
+      if (s - minSkill <= window) {
+        pickIdx.push(j);
+      }
     }
 
     if (pickIdx.length >= 4) {
-      pickIdx.sort((a,b)=>a-b);
+      pickIdx.sort((a, b) => a - b);
       const quad = pickIdx.slice(0, 4).map(ix => sortedPlayers[ix]);
-      for (const ix of pickIdx.slice(0,4)) used.add(ix);
+      for (const ix of pickIdx.slice(0, 4)) used.add(ix);
       groups.push(quad);
     }
   }
   return groups;
 }
 
-// BAND MODE: assign band index; allow band±k; expand only if needed
+// BAND MODE: assign band index; allow band±1; expand band window only if needed
 function makeGroupsBand(sortedPlayers, courtCount) {
   const withBand = sortedPlayers.map(p => ({ ...p, _band: bandOf(p.skill_level) }));
   for (let bandWindow = 0; bandWindow <= MAX_BAND_EXPANSION; bandWindow++) {
@@ -248,6 +260,7 @@ function makeGroupsBand(sortedPlayers, courtCount) {
   }
   return [];
 }
+
 function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
   const used = new Set();
   const groups = [];
@@ -258,34 +271,52 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
     const minBand = root._band;
 
     const pickIdx = [i];
+
+    // forward sweep: same band or within ±bandWindow
     for (let j = i + 1; j < playersWithBand.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
+      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
       const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) pickIdx.push(j);
-      else if (bj - minBand > bandWindow) break;
+      if (Math.abs(bj - minBand) <= bandWindow) {
+        pickIdx.push(j);
+      } else if (bj - minBand > bandWindow) {
+        break;
+      }
     }
+
+    // backward sweep from end to fill
     for (let j = playersWithBand.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
+      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
       const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) pickIdx.push(j);
+      if (Math.abs(bj - minBand) <= bandWindow) {
+        pickIdx.push(j);
+      }
     }
+
     if (pickIdx.length >= 4) {
-      pickIdx.sort((a,b)=>a-b);
+      pickIdx.sort((a, b) => a - b);
       const quad = pickIdx.slice(0, 4).map(ix => stripBand(playersWithBand[ix]));
-      for (const ix of pickIdx.slice(0,4)) used.add(ix);
+      for (const ix of pickIdx.slice(0, 4)) used.add(ix);
       groups.push(quad);
     }
   }
+
   return groups;
 }
+
 function bandOf(level) {
   for (let i = 0; i < BANDS.length; i++) {
     if (level >= BANDS[i].min && level <= BANDS[i].max) return i; // 0..4
   }
+  // clamp out-of-range
   if (level < BANDS[0].min) return 0;
   return BANDS.length - 1;
 }
-function stripBand(p) { const { _band, ...rest } = p; return rest; }
+function stripBand(p) {
+  const { _band, ...rest } = p;
+  return rest;
+}
 
 /* ========================= Rematch bookkeeping ========================= */
 function pairKey(a, b) {
@@ -304,95 +335,16 @@ function trimHistory(map, keep) {
     if (arr.length > keep) map.set(k, arr.slice(arr.length - keep));
   }
 }
-
-/* ========================= Analytics helpers ========================= */
-
-/** Basic fairness stats on current present set */
-export function fairnessStats(present) {
-  if (!present || !present.length) return { mean:0, stdev:0, spread:0, min:0, max:0 };
-  const bc = present.map(p => p.bench_count || 0);
-  return {
-    mean: Number(avg(bc).toFixed(2)),
-    stdev: Number(stddev(bc).toFixed(2)),
-    spread: Math.max(...bc) - Math.min(...bc),
-    min: Math.min(...bc),
-    max: Math.max(...bc),
-  };
+function pairPenalty(a, b, map) {
+  const entry = map.get(pairKey(a, b));
+  if (!entry || entry.length === 0) return 0;
+  return Math.min(3, entry.length) * REMATCH_PENALTY;
 }
 
-/** Round diagnostics from built matches */
-export function roundDiagnostics(matches, buildMs = 0) {
-  if (!matches || !matches.length) return {
-    buildMs, avgDiff: 0, diffs: [], usedCourts: 0, spans: []
-  };
-  const diffs = matches.map(m => Math.abs(m.avg1 - m.avg2));
-  const spans = matches.map(m => {
-    const s = [...m.team1, ...m.team2].map(p => p.skill_level).sort((a,b)=>a-b);
-    return s[s.length-1] - s[0];
-  });
-  return {
-    buildMs,
-    avgDiff: Number(avg(diffs).toFixed(2)),
-    diffs,
-    usedCourts: matches.length,
-    spans,
-  };
-}
-
-/** All-time unique teammates/opponents per player (from history array) */
-export function perPlayerUniq(history, presentIds = new Set()) {
-  return perPlayerUniqLastN(history, Infinity, presentIds);
-}
-
-/** Unique teammates/opponents per player for last N rounds (N can be Infinity) */
-export function perPlayerUniqLastN(history, lastNRounds = Infinity, presentIds = new Set()) {
-  const teamMates = new Map(); // id -> Set(ids)
-  const opponents = new Map();
-  const add = (map, id, peer) => {
-    if (!map.has(id)) map.set(id, new Set());
-    map.get(id).add(peer);
-  };
-
-  // Filter to last N rounds
-  const rounds = Array.from(new Set((history||[]).map(h=>h.round))).sort((a,b)=>a-b);
-  const maxR = rounds.length ? rounds[rounds.length-1] : 0;
-  const minKeep = isFinite(lastNRounds) ? Math.max(1, maxR - lastNRounds + 1) : -Infinity;
-  const filt = (history||[]).filter(h => h.round >= minKeep);
-
-  for (const h of filt) {
-    const t1 = h.team1 || []; const t2 = h.team2 || [];
-    for (const a of t1) for (const b of t1) if (a.id !== b.id) add(teamMates, a.id, b.id);
-    for (const a of t2) for (const b of t2) if (a.id !== b.id) add(teamMates, a.id, b.id);
-    for (const a of t1) for (const b of t2) { add(opponents, a.id, b.id); add(opponents, b.id, a.id); }
-  }
-  const out = {};
-  const allIds = presentIds.size ? [...presentIds] : Array.from(new Set(
-    (filt||[]).flatMap(h => [...(h.team1||[]), ...(h.team2||[])]).map(p => p.id)
-  ));
-  for (const id of allIds) {
-    out[id] = {
-      uniqTeammates: (teamMates.get(id)?.size || 0),
-      uniqOpponents: (opponents.get(id)?.size || 0),
-    };
-  }
-  return out;
-}
-
-/** Count back-to-back bench streaks from an array of round benches: [{round, ids:Set()}] */
-export function countBackToBackBenches(benchedSequence) {
-  const worst = new Map();
-  const cur = new Map();
-  for (const step of (benchedSequence || [])) {
-    const ids = step.ids || new Set();
-    const allIds = new Set([...cur.keys(), ...ids]);
-    for (const id of allIds) {
-      const was = cur.get(id) || 0;
-      const now = ids.has(id) ? was + 1 : 0;
-      cur.set(id, now);
-      worst.set(id, Math.max(worst.get(id) || 0, now));
-    }
-  }
-  const out = {};
-  for (const [id, w] of worst.entries()) out[id] = w;
-  return out;
+/* ========================= Timer util (used by App.jsx) ========================= */
+export function formatTime(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
