@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import './App.css';
 import {
   MATCH_MODES,
   getMatchMode, setMatchMode,
@@ -7,6 +8,7 @@ import {
   fairnessStats,
   roundDiagnostics,
   perPlayerUniq,
+  perPlayerUniqLastN,
   countBackToBackBenches,
   formatTime,
 } from './logic';
@@ -17,6 +19,7 @@ const API = '/.netlify/functions/players';
 //   GET    -> returns array of players
 //   PATCH  -> body: { updates: [{ id, fields: {...} }, ...] }    (update many)
 //   POST   -> body: { players: [ ... ] }                         (upsert many)
+//   DELETE -> body: { id }                                       (hard delete one)
 
 async function apiGetPlayers() {
   const r = await fetch(API);
@@ -41,12 +44,26 @@ async function apiUpsert(players) {
   if (!r.ok) throw new Error('POST failed');
   return await r.json();
 }
+async function apiDelete(id) {
+  const r = await fetch(API, {
+    method: 'DELETE',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify({ id })
+  });
+  if (!r.ok) throw new Error('DELETE failed');
+  return await r.json();
+}
 
 // ========================== Local persistence helpers ==========================
 const LS = {
   showLevels: 'flo_show_levels',
   adminOn:    'flo_admin_on',
-  mode:       'flomatch_mode', // same key used in logic.js for convenience
+  mode:       'flomatch_mode',
+  roundSecs:  'flo_round_secs',
+  transSecs:  'flo_transition_secs',
+  courts:     'flo_courts',
+  soundOn:    'flo_sound_on',
+  warnSecs:   'flo_warn_secs',
 };
 const getLS = (k, d=null) => {
   try { const v = localStorage.getItem(k); return v===null?d:JSON.parse(v); } catch { return d; }
@@ -57,14 +74,14 @@ const setLS = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } ca
 function useBeep() {
   const ctxRef = useRef(null);
   useEffect(()=>()=>{ try{ctxRef.current && ctxRef.current.close();}catch{} },[]);
-  return (freq=880, ms=160) => {
+  return (freq=880, ms=160, volume=0.04) => {
     try {
       if (!ctxRef.current) ctxRef.current = new (window.AudioContext||window.webkitAudioContext)();
       const ctx = ctxRef.current;
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.frequency.value = freq;
-      g.gain.value = 0.03;
+      g.gain.value = volume;
       o.connect(g); g.connect(ctx.destination);
       o.start();
       setTimeout(()=>{ try{o.stop();}catch{} }, ms);
@@ -73,17 +90,10 @@ function useBeep() {
 }
 
 // ========================== UI helpers ==========================
-const badge = (txt) => <span style={{
-  display:'inline-block', padding:'2px 8px', borderRadius:999, background:'#0b2a43', color:'#a7c8ff', fontSize:12
-}}>{txt}</span>;
+const badge = (txt) => <span className="badge">{txt}</span>;
 
 const chip = (p, showLevel) => (
-  <span key={p.id} style={{
-    display:'inline-flex', alignItems:'center',
-    padding:'6px 10px', borderRadius:18, margin:'4px 6px 4px 0',
-    background: p.gender === 'F' ? '#ff8fb1' : '#8bb2ff', // darker pink/blue
-    color: '#0b1420', fontWeight:600
-  }}>
+  <span key={p.id} className={`chip ${p.gender==='F' ? 'chipF' : 'chipM'}`}>
     {p.name}{showLevel ? ` · L${p.skill_level}` : ''}
   </span>
 );
@@ -100,28 +110,37 @@ export default function App() {
   const [showLevels, setShowLevels] = useState(getLS(LS.showLevels,false));
   const ADMIN_PIN = import.meta?.env?.VITE_ADMIN_PIN || '1234';
 
+  // settings
+  const [courts, setCourts] = useState(getLS(LS.courts, 4));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [roundSeconds, setRoundSeconds] = useState(getLS(LS.roundSecs, 12*60));
+  const [transitionSecs, setTransitionSecs] = useState(getLS(LS.transSecs, 30));
+  const [soundOn, setSoundOn] = useState(getLS(LS.soundOn, true));
+  const [warnSecs, setWarnSecs] = useState(getLS(LS.warnSecs, 30));
+
   // session
   const [round, setRound] = useState(1);
   const [mode, _setMode] = useState(getMatchMode());
   const setMode = (m)=>{ _setMode(m); setMatchMode(m); };
 
   // timer
-  const [roundSeconds, setRoundSeconds] = useState(12*60);
-  const [transitionSecs, setTransitionSecs] = useState(30);
   const [timeLeft, setTimeLeft] = useState(roundSeconds);
   const [running, setRunning] = useState(false);
   const [transition, setTransition] = useState(false); // 30s inter-round
-  const timerRef = useRef(null);
+  const mainTimerRef = useRef(null);
+  const transTimerRef = useRef(null);
 
   // session data
   const [presentIds, setPresentIds] = useState(new Set());
   const present = useMemo(()=> players.filter(p=>presentIds.has(p.id)), [players, presentIds]);
-  const [matches, setMatches] = useState([]);            // current round matches
+  const [matches, setMatches] = useState([]);            // current round matches (show during round AND transition)
+  const [nextMatches, setNextMatches] = useState([]);    // (not used now; we prebuild directly into matches)
   const [benched, setBenched] = useState([]);            // current round bench
   const [lastBenchedSet, setLastBenchedSet] = useState(new Set());
-  const [history, setHistory] = useState([]);            // list of {round,court,team1,team2,avg1,avg2}
-  const [benchedSeq, setBenchedSeq] = useState([]);      // [{round, ids:Set()}] for streak diagnostics
+  const [history, setHistory] = useState([]);            // [{round,court,team1,team2,avg1,avg2}]
+  const [benchedSeq, setBenchedSeq] = useState([]);      // [{round, ids:Set()}]
   const teammateHistoryRef = useRef(new Map());          // pair -> timestamps
+  const [diagByRound, setDiagByRound] = useState([]);    // [{round, buildMs, avgDiff, usedCourts, spans, diffs}]
 
   const beep = useBeep();
 
@@ -132,6 +151,9 @@ export default function App() {
       try {
         const data = await apiGetPlayers();
         setPlayers(data || []);
+        // restore present from DB
+        const preset = new Set((data||[]).filter(p=>p.is_present).map(p=>p.id));
+        setPresentIds(preset);
       } catch (e) {
         alert('Could not load players (Netlify function). Check logs / env.');
       } finally {
@@ -143,34 +165,54 @@ export default function App() {
   // ------------- persist toggles
   useEffect(()=> setLS(LS.adminOn, admin), [admin]);
   useEffect(()=> setLS(LS.showLevels, showLevels), [showLevels]);
+  useEffect(()=> setLS(LS.roundSecs, roundSeconds), [roundSeconds]);
+  useEffect(()=> setLS(LS.transSecs, transitionSecs), [transitionSecs]);
+  useEffect(()=> setLS(LS.courts, courts), [courts]);
+  useEffect(()=> setLS(LS.soundOn, soundOn), [soundOn]);
+  useEffect(()=> setLS(LS.warnSecs, warnSecs), [warnSecs]);
 
   // ------------- timer loop
   useEffect(()=>{
+    clearInterval(mainTimerRef.current);
     if (!running) return;
-    timerRef.current = setInterval(()=>{
+    mainTimerRef.current = setInterval(()=>{
       setTimeLeft(prev=>{
-        if (prev > 0) return prev - 1;
-        // prev == 0 -> end-of-round
-        clearInterval(timerRef.current);
+        const nxt = prev - 1;
+        if (nxt > 0) {
+          // last warn?
+          if (soundOn && nxt === warnSecs) beep(660,120,0.05);
+          return nxt;
+        }
+        // reached 0 -> end-of-round (prebuild next here; show during transition)
+        clearInterval(mainTimerRef.current);
         onRoundTimeExpired();
         return 0;
       });
     }, 1000);
-    return ()=> clearInterval(timerRef.current);
-  }, [running]);
+    return ()=> clearInterval(mainTimerRef.current);
+  }, [running, warnSecs, soundOn]);
 
-  // ------------- convenience
+  // ------------- convenience flags
   const isHome = view === 'home';
   const isSession = view === 'session';
   const isDisplay = view === 'display';
+  const timerColor = !running && transition
+    ? ((timeLeft % 2) ? '#ffffff' : '#ff4d6d')       // blinking red/white during transition
+    : (running && timeLeft <= warnSecs ? '#ffd166' : '#e6f1ff'); // yellow in last warn window
 
   // ===================== Actions =====================
 
   function goHome() {
     setView('home');
+    stopAllTimers();
+    setTimeLeft(roundSeconds);
+  }
+
+  function stopAllTimers(){
     setRunning(false);
     setTransition(false);
-    setTimeLeft(roundSeconds);
+    clearInterval(mainTimerRef.current);
+    clearInterval(transTimerRef.current);
   }
 
   function beginNight() {
@@ -180,8 +222,7 @@ export default function App() {
     setLastBenchedSet(new Set());
     // DO NOT reset bench_count here; only when End Night
     setView('session');
-    setRunning(false);
-    setTransition(false);
+    stopAllTimers();
     setTimeLeft(roundSeconds);
   }
 
@@ -191,6 +232,7 @@ export default function App() {
 
   async function endNight() {
     try {
+      stopAllTimers();
       // Prepare Smart Session Summary + Diagnostics first
       const summary = buildSmartSummary();
       const diag = buildDiagnostics();
@@ -211,10 +253,9 @@ export default function App() {
       setMatches([]);
       setBenched([]);
       setHistory([]);
+      setDiagByRound([]);
       setBenchedSeq([]);
       setLastBenchedSet(new Set());
-      setRunning(false);
-      setTransition(false);
       setTimeLeft(roundSeconds);
 
       goHome();
@@ -246,7 +287,7 @@ export default function App() {
   // Skip transition, build next immediately
   async function nextRound() {
     try {
-      await buildNextRound({ viaTransition:false });
+      await buildNextRound({ viaTransition:false, forceNextRoundIncrement:true });
       setRunning(true);
     } catch (e) {
       alert('Next Round failed.');
@@ -254,28 +295,40 @@ export default function App() {
     }
   }
 
-  async function buildNextRound({ viaTransition }) {
+  // Core builder (also used by transition)
+  async function buildNextRound({ viaTransition, forceNextRoundIncrement = false }) {
+    // If viaTransition: we are building *for the upcoming round*, show immediately during transition.
     if (present.length < 4) {
       setMatches([]); setBenched(present.slice());
       return;
     }
+    const targetRound = forceNextRoundIncrement ? (round + 1) : (viaTransition ? (round + 1) : round);
+
     const t0 = performance.now();
     // Select players fairly
     const { playing, benched: bench } = selectPlayersForRound(
-      present, round, lastBenchedSet, 4
+      present, targetRound, lastBenchedSet, courts
     );
     // Build matches with current mode
-    const ms = buildMatchesFrom16(playing, teammateHistoryRef.current, 4, mode);
+    let ms = buildMatchesFrom16(playing, teammateHistoryRef.current, courts, mode);
+
+    // Duplicate guard (shouldn’t happen, but protect UI)
+    const idsSeen = new Set();
+    ms = ms.map(m=>{
+      const t1 = []; const t2 = [];
+      for (const p of m.team1) if (!idsSeen.has(p.id)) { idsSeen.add(p.id); t1.push(p); }
+      for (const p of m.team2) if (!idsSeen.has(p.id)) { idsSeen.add(p.id); t2.push(p); }
+      return { ...m, team1:t1, team2:t2 };
+    });
 
     // Persist bench_count++ for benched; update last_played_round for playing
-    const nowRound = round;
     const updates = [];
     const benchIds = new Set(bench.map(b => b.id));
     for (const p of present) {
       if (benchIds.has(p.id)) {
         updates.push({ id:p.id, fields:{ bench_count: (p.bench_count||0)+1 }});
-      } else {
-        updates.push({ id:p.id, fields:{ last_played_round: nowRound }});
+      } else if (playing.find(x=>x.id===p.id)) {
+        updates.push({ id:p.id, fields:{ last_played_round: targetRound }});
       }
     }
     await apiPatch(updates);
@@ -283,64 +336,80 @@ export default function App() {
     // Update local cache mirrors
     setPlayers(ps => ps.map(p=>{
       if (benchIds.has(p.id)) return { ...p, bench_count:(p.bench_count||0)+1 };
-      if (playing.find(x=>x.id===p.id)) return { ...p, last_played_round: nowRound };
+      if (playing.find(x=>x.id===p.id)) return { ...p, last_played_round: targetRound };
       return p;
     }));
 
+    // Assign to UI
     setMatches(ms);
     setBenched(bench);
     setLastBenchedSet(new Set(bench.map(b=>b.id)));
-    setBenchedSeq(seq => [...seq, { round: nowRound, ids: new Set(bench.map(b=>b.id)) }]);
+    setBenchedSeq(seq => [...seq, { round: targetRound, ids: new Set(bench.map(b=>b.id)) }]);
 
-    // Log to history for summary/diagnostics
-    setHistory(h => [
-      ...h,
-      ...ms.map(m=>({
-        round: nowRound, court: m.court, team1: m.team1, team2: m.team2, avg1:m.avg1, avg2:m.avg2
-      }))
-    ]);
+    // Log round to history for summary/diagnostics
+    const built = ms.map(m=>({
+      round: targetRound, court: m.court, team1: m.team1, team2: m.team2, avg1:m.avg1, avg2:m.avg2
+    }));
+    setHistory(h => [...h, ...built]);
 
-    // Prepare timers
-    const buildMs = Math.max(0, Math.round(performance.now() - t0));
-    console.debug('Round built in', buildMs, 'ms');
+    // Per-round diagnostics
+    const diag = roundDiagnostics(ms, Math.max(0, Math.round(performance.now() - t0)));
+    setDiagByRound(prev=>{
+      const rest = prev.filter(x=>x.round!==targetRound);
+      return [...rest, { round: targetRound, ...diag }].sort((a,b)=>a.round-b.round);
+    });
+
     if (!viaTransition) {
+      // in-round build
       setTransition(false);
       setTimeLeft(roundSeconds);
+      if (forceNextRoundIncrement) setRound(r=>r+1);
       setRunning(true);
     }
   }
 
   function onRoundTimeExpired() {
-    // Round phase ended -> transition phase begins (30s)
+    // Round phase ended -> prebuild next round NOW so it shows during transition
+    if (soundOn) beep(880,160,0.06);
     setRunning(false);
     setTransition(true);
-    setTimeLeft(transitionSecs);
-    beep(880,140);
 
-    // Start transition countdown
-    const id = setInterval(()=>{
-      setTimeLeft(prev=>{
-        if (prev>0) return prev-1;
-        clearInterval(id);
-        onTransitionExpired();
-        return 0;
-      });
-    }, 1000);
+    // Build next round for display during the 30s
+    buildNextRound({ viaTransition:true }).then(()=>{
+      // Begin blinking transition countdown
+      setTimeLeft(transitionSecs);
+      clearInterval(transTimerRef.current);
+      transTimerRef.current = setInterval(()=>{
+        setTimeLeft(prev=>{
+          if (prev>0) return prev-1;
+          clearInterval(transTimerRef.current);
+          onTransitionExpired();
+          return 0;
+        });
+      }, 1000);
+    }).catch(e=>{
+      console.error('Prebuild during transition failed', e);
+      // Still start transition timer to avoid deadlock
+      setTimeLeft(transitionSecs);
+      clearInterval(transTimerRef.current);
+      transTimerRef.current = setInterval(()=>{
+        setTimeLeft(prev=>{
+          if (prev>0) return prev-1;
+          clearInterval(transTimerRef.current);
+          onTransitionExpired();
+          return 0;
+        });
+      }, 1000);
+    });
   }
 
   async function onTransitionExpired() {
-    // Build next matches while showing them during transition; then start next round
+    // Transition ended -> start the new round we already built
+    if (soundOn) beep(1200,220,0.07);
     setTransition(false);
-    setRound(r => r+1);
-    try{
-      await buildNextRound({ viaTransition:true });
-      setTimeLeft(roundSeconds);
-      setRunning(true);
-      beep(1200,200);
-    }catch(e){
-      alert('Auto-build after transition failed.');
-      console.error(e);
-    }
+    setRound(r => r+1); // increment when the new round actually starts
+    setTimeLeft(roundSeconds);
+    setRunning(true);
   }
 
   // Toggle present by double-click in either list
@@ -361,7 +430,7 @@ export default function App() {
     else alert('Wrong PIN');
   }
 
-  // CRUD in Admin Controls (inline, no browser prompts for create/edit)
+  // CRUD in Admin Controls (inline)
   function addPlayerInline() {
     const newPlayer = {
       id: crypto.randomUUID(),
@@ -384,24 +453,30 @@ export default function App() {
     if (!p) return;
     apiUpsert([p]).catch(()=> alert('Save failed'));
   }
-  function deletePlayer(id) {
-    // soft-delete: mark exclude (if your function supports hard delete, you can switch)
-    setPlayers(ps => ps.filter(p => p.id!==id));
-    // A simple upsert-less delete is not shown here; if needed, extend Netlify function to DELETE.
+  async function deletePlayerRow(id) {
+    if (!window.confirm('Delete this player?')) return;
+    try {
+      await apiDelete(id);
+      setPlayers(ps => ps.filter(p=>p.id!==id));
+      setPresentIds(s=>{ const n=new Set(s); n.delete(id); return n; });
+    } catch (e) {
+      alert('Delete failed');
+    }
   }
 
   // ============== Smart Session Summary & Diagnostics ==============
   function buildSmartSummary() {
     const pres = players.filter(p => presentIds.has(p.id));
     const fair = fairnessStats(pres);
-    const uniq = perPlayerUniq(history, new Set(pres.map(p=>p.id)));
+    const uniqAll = perPlayerUniq(history, new Set(pres.map(p=>p.id)));
+    const uniqLastN = perPlayerUniqLastN(history, Infinity, new Set(pres.map(p=>p.id)));
     const streaks = countBackToBackBenches(benchedSeq);
 
-    // Per-player table rows for *all present*, even if never played
     const rows = pres.map(p => {
       const played = history.filter(h => [...(h.team1||[]), ...(h.team2||[])].find(x=>x.id===p.id)).length;
       const bCount = p.bench_count || 0;
-      const uniqRow = uniq[p.id] || { uniqTeammates:0, uniqOpponents:0 };
+      const uAll = uniqAll[p.id] || { uniqTeammates:0, uniqOpponents:0 };
+      const uN   = uniqLastN[p.id] || { uniqTeammates:0, uniqOpponents:0 };
       return {
         id: p.id,
         name: p.name,
@@ -409,90 +484,98 @@ export default function App() {
         played,
         benched: bCount,
         worstBenchStreak: streaks[p.id] || 0,
-        uniqTeammates: uniqRow.uniqTeammates,
-        uniqOpponents: uniqRow.uniqOpponents,
+        uniqTeammatesAll: uAll.uniqTeammates,
+        uniqOpponentsAll: uAll.uniqOpponents,
+        uniqTeammatesN: uN.uniqTeammates,
+        uniqOpponentsN: uN.uniqOpponents,
       };
     }).sort((a,b)=> b.played - a.played || a.name.localeCompare(b.name));
+
+    // Aggregate diagnostics across rounds
+    const diagAgg = {
+      rounds: diagByRound.length,
+      avgBuildMs: Number(avg(diagByRound.map(d=>d.buildMs||0)).toFixed(1)),
+      avgTeamDiff: Number(avg(diagByRound.map(d=>d.avgDiff||0)).toFixed(2)),
+      maxSpan: Math.max(0, ...diagByRound.flatMap(d=>d.spans||[0])),
+    };
 
     return {
       overview: {
         rounds: round,
         presentCount: pres.length,
+        mode,
+        courts,
       },
       fairness: fair,
+      diagAgg,
+      diagPerRound: diagByRound.slice().sort((a,b)=>a.round-b.round),
       rows
     };
   }
 
   function buildDiagnostics() {
-    // aggregate last round build metrics
-    if (!history.length) return { last:{} };
-    const byRound = new Map();
-    for (const h of history) {
-      if (!byRound.has(h.round)) byRound.set(h.round, []);
-      byRound.get(h.round).push(h);
-    }
-    const lastR = Math.max(...byRound.keys());
-    const mats = byRound.get(lastR) || [];
-    const diag = roundDiagnostics(mats);
-    return { last: diag };
+    // last-round diagnostic is in diagByRound already
+    const last = diagByRound.length ? diagByRound[diagByRound.length-1] : {};
+    return { last };
   }
 
   function showSummaryModal(summary, diag) {
     return new Promise((resolve)=>{
-      // super-simple modal
       const html = document.createElement('div');
-      html.style.position='fixed'; html.style.inset='0';
-      html.style.background='rgba(0,0,0,0.6)';
-      html.style.zIndex='9999'; html.style.display='flex';
-      html.style.alignItems='center'; html.style.justifyContent='center';
+      html.className = 'modalMask';
       html.innerHTML = `
-        <div style="width: min(1100px, 95vw); max-height: 90vh; overflow:auto; background:#0e1621; color:#cfe6ff; border-radius:16px; padding:20px; border:1px solid #203247">
-          <h2 style="margin:0 0 10px 0;">Smart Session Summary</h2>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+        <div class="modalCard">
+          <h2>Smart Session Summary</h2>
+          <div class="grid2">
             <div>
               <h3>Overview</h3>
               <div>Rounds: <b>${summary.overview.rounds}</b></div>
               <div>Participants: <b>${summary.overview.presentCount}</b></div>
+              <div>Mode: <b>${summary.overview.mode}</b> &nbsp; Courts: <b>${summary.overview.courts}</b></div>
               <h3 style="margin-top:12px;">Fairness</h3>
               <div>Mean benches: <b>${summary.fairness.mean}</b> &nbsp; StDev: <b>${summary.fairness.stdev}</b> &nbsp; Spread: <b>${summary.fairness.spread}</b></div>
             </div>
             <div>
-              <h3>Diagnostics (last round)</h3>
+              <h3>Diagnostics (aggregate)</h3>
+              <div>Rounds analysed: <b>${summary.diagAgg.rounds}</b></div>
+              <div>Avg build time: <b>${summary.diagAgg.avgBuildMs} ms</b></div>
+              <div>Avg team diff: <b>${summary.diagAgg.avgTeamDiff}</b></div>
+              <div>Max skill span in a quad: <b>${summary.diagAgg.maxSpan}</b></div>
+              <h3 style="margin-top:12px;">Last round</h3>
               <div>Avg team diff: <b>${diag?.last?.avgDiff ?? '-'}</b></div>
               <div>Courts used: <b>${diag?.last?.usedCourts ?? '-'}</b></div>
               <div>Skill spans: <b>${(diag?.last?.spans||[]).join(', ')}</b></div>
             </div>
           </div>
+
           <h3 style="margin:16px 0 6px;">Per-player (Present)</h3>
-          <table style="width:100%; border-collapse:collapse; font-size:14px;">
+          <table class="sumTable">
             <thead>
-              <tr style="text-align:left; background:#0b2033">
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Name</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Lvl</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Played</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Benched</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Worst Bench Streak</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Unique Teammates</th>
-                <th style="padding:6px 8px;border-bottom:1px solid #1e3146;">Unique Opponents</th>
+              <tr>
+                <th>Name</th><th>Lvl</th><th>Played</th><th>Benched</th><th>Worst Bench Streak</th>
+                <th>Uniq Tm (All)</th><th>Uniq Opp (All)</th>
+                <th>Uniq Tm (N)</th><th>Uniq Opp (N)</th>
               </tr>
             </thead>
             <tbody>
               ${summary.rows.map(r=>`
                 <tr>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.name}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.level}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.played}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.benched}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.worstBenchStreak}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.uniqTeammates}</td>
-                  <td style="padding:6px 8px;border-bottom:1px solid #142335;">${r.uniqOpponents}</td>
+                  <td>${r.name}</td>
+                  <td>${r.level}</td>
+                  <td>${r.played}</td>
+                  <td>${r.benched}</td>
+                  <td>${r.worstBenchStreak}</td>
+                  <td>${r.uniqTeammatesAll}</td>
+                  <td>${r.uniqOpponentsAll}</td>
+                  <td>${r.uniqTeammatesN}</td>
+                  <td>${r.uniqOpponentsN}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
+
           <div style="text-align:right; margin-top:16px;">
-            <button id="flo-close" style="background:#2a6bff;color:white;border:none;border-radius:10px;padding:8px 14px;cursor:pointer;">Close</button>
+            <button id="flo-close" class="btn primary">Close</button>
           </div>
         </div>
       `;
@@ -504,77 +587,63 @@ export default function App() {
   // ===================== Renders =====================
 
   function HeaderBar() {
-    const isBlinking = (!running && transition && timeLeft<=transitionSecs);
     return (
-      <div style={{
-        display:'grid', gridTemplateColumns:'1fr auto 1fr', alignItems:'center',
-        background:'#0a1220', padding:'10px 12px', borderBottom:'1px solid #1b2b40',
-        position:'sticky', top:0, zIndex:10
-      }}>
-        <div style={{display:'flex', gap:8}}>
+      <div className="headerBar">
+        <div className="leftBtns">
           {isHome ? (
             <>
-              <button className="btn" onClick={beginNight}>Begin Night</button>
+              <button className="btn primary" onClick={beginNight}>Begin Night</button>
               <button className="btn" onClick={()=>setView('session')}>Session</button>
               <button className="btn" onClick={openDisplay}>Open Display</button>
               <button className="btn" onClick={()=> admin? setAdmin(false) : requestAdmin()}>{admin?'Exit Admin':'Admin'}</button>
+              <button className="btn" onClick={()=>setSettingsOpen(true)}>Settings</button>
+              <button className="btn" onClick={toggleMode}>Mode: {mode===MATCH_MODES.BAND?'Band':'Window'}</button>
             </>
           ) : (
             <>
-              <button className="btn" onClick={buildOrResume} style={{background:'#2a6bff', color:'#fff'}}>Build/Resume</button>
+              <button className="btn primary" onClick={buildOrResume}>Build/Resume</button>
               <button className="btn" onClick={()=>{ setRunning(false); }}>Pause</button>
               <button className="btn" onClick={nextRound}>Next Round</button>
               <button className="btn danger" onClick={endNight}>End Night</button>
               <button className="btn" onClick={openDisplay}>Open Display</button>
+              <button className="btn" onClick={()=>setSettingsOpen(true)}>Settings</button>
               <button className="btn" onClick={toggleMode}>Mode: {mode===MATCH_MODES.BAND?'Band':'Window'}</button>
               <button className="btn" onClick={()=> admin? setAdmin(false) : requestAdmin()}>{admin?'Exit Admin':'Admin'}</button>
             </>
           )}
         </div>
 
-        {/* Center Title + Timer */}
-        <div style={{textAlign:'center'}}>
-          <div style={{fontWeight:700}}>🏸 TheFLOminton System</div>
-          <div style={{
-            fontVariantNumeric:'tabular-nums',
-            fontSize: isDisplay? 44 : 24,
-            color: (running ? '#cfe6ff' : (transition ? (timeLeft%2? '#fff':'#ff4d6d') : '#cfe6ff')),
-            transition:'color 120ms linear'
-          }}>
+        {/* Center Title + Timer + Present Count */}
+        <div className="centerInfo">
+          <div className="title">🏸 TheFLOminton System</div>
+          <div className="timerWrap" style={{color: timerColor}}>
             {transition ? `Next in ${formatTime(timeLeft)}` : `${formatTime(timeLeft)}`} {isSession ? badge(`Round ${round}`) : null}
+            &nbsp; {isSession ? badge(`${present.length} present`) : null}
           </div>
         </div>
 
-        <div style={{textAlign:'right'}}>
-          {/* reserved for future right-side buttons */}
-        </div>
+        <div className="rightSpace" />
       </div>
     );
   }
 
   function CourtsGrid() {
     return (
-      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12}}>
+      <div className="courtsGrid">
         {matches.map(m => (
-          <div key={m.court} style={{background:'#0e1621', border:'1px solid #1b2b40', borderRadius:14, padding:12}}>
-            <div style={{display:'flex', justifyContent:'space-between', marginBottom:6}}>
-              <div style={{fontWeight:700}}>Court {m.court}</div>
+          <div key={m.court} className="courtCard">
+            <div className="courtTop">
+              <div className="courtName">Court {m.court}</div>
               {admin && showLevels ? (
-                <div style={{opacity:0.85}}>
+                <div className="avgInfo">
                   Team 1 Avg <b>{Number(m.avg1.toFixed(1))}</b> &nbsp;&nbsp;
                   Team 2 Avg <b>{Number(m.avg2.toFixed(1))}</b>
                 </div>
               ) : null}
             </div>
-            <div style={{
-              display:'grid', gridTemplateColumns:'1fr', rowGap:10
-            }}>
+            <div className="teamsWrap">
               <div>{m.team1.map(p=>chip(p, admin && showLevels))}</div>
-              {/* prominent divider */}
-              <div style={{
-                height:8, borderRadius:6,
-                background:'repeating-linear-gradient(90deg,#a3b9d9 0 12px, #233853 12px 20px)'
-              }} />
+              <div className="divider" />
               <div>{m.team2.map(p=>chip(p, admin && showLevels))}</div>
             </div>
           </div>
@@ -586,9 +655,9 @@ export default function App() {
   function BenchedBar() {
     if (!benched.length) return null;
     return (
-      <div style={{marginTop:12, background:'#0e1621', border:'1px solid #1b2b40', borderRadius:14, padding:'10px 12px'}}>
-        <div style={{fontWeight:700, marginBottom:6}}>Benched Players</div>
-        <div style={{display:'flex', flexWrap:'wrap'}}>
+      <div className="benchedBar">
+        <div className="benchedTitle">Benched Players</div>
+        <div className="benchedWrap">
           {benched.map(p=>chip(p, admin && showLevels))}
         </div>
       </div>
@@ -600,38 +669,38 @@ export default function App() {
     const presentList = players.filter(p=>presentIds.has(p.id));
 
     return (
-      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginTop:12}}>
-        <div style={{background:'#0e1621', border:'1px solid #1b2b40', borderRadius:14, padding:12}}>
-          <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
-            <div style={{fontWeight:700}}>All Players</div>
+      <div className="dualGrid">
+        <div className="panel">
+          <div className="panelTop">
+            <div className="panelTitle">All Players</div>
             <div>{badge(String(allList.length))}</div>
           </div>
           <div>
             {allList.map(p=>(
               <div key={p.id}
                    onDoubleClick={()=>togglePresent(p.id)}
-                   style={{padding:'6px 4px', cursor:'pointer'}}
+                   className="rowClickable"
               >
                 {chip(p, admin && showLevels)}
-                {admin ? <span style={{opacity:0.7, marginLeft:8}}>Benched {p.bench_count||0}</span> : null}
+                {admin ? <span className="muted">Benched {p.bench_count||0}</span> : null}
               </div>
             ))}
           </div>
         </div>
 
-        <div style={{background:'#0e1621', border:'1px solid #1b2b40', borderRadius:14, padding:12}}>
-          <div style={{display:'flex',justifyContent:'space-between',marginBottom:6}}>
-            <div style={{fontWeight:700}}>Present Today</div>
+        <div className="panel">
+          <div className="panelTop">
+            <div className="panelTitle">Present Today</div>
             <div>{badge(String(presentList.length))}</div>
           </div>
           <div>
             {presentList.map(p=>(
               <div key={p.id}
                    onDoubleClick={()=>togglePresent(p.id)}
-                   style={{padding:'6px 4px', cursor:'pointer'}}
+                   className="rowClickable"
               >
                 {chip(p, admin && showLevels)}
-                {admin ? <span style={{opacity:0.7, marginLeft:8}}>Benched {p.bench_count||0}</span> : null}
+                {admin ? <span className="muted">Benched {p.bench_count||0}</span> : null}
               </div>
             ))}
           </div>
@@ -643,48 +712,52 @@ export default function App() {
   function AdminPanel() {
     if (!admin) return null;
     return (
-      <div style={{marginTop:14, background:'#0e1621', border:'1px solid #1b2b40', borderRadius:14, padding:12}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div style={{fontWeight:700}}>Admin Controls</div>
-          <div style={{display:'flex',gap:10}}>
-            <label style={{display:'inline-flex', alignItems:'center', gap:6}}>
+      <div className="adminPanel">
+        <div className="adminTop">
+          <div className="panelTitle">Admin Controls</div>
+          <div className="adminBtns">
+            <label className="toggleRow">
               <input type="checkbox" checked={showLevels} onChange={e=>setShowLevels(e.target.checked)} />
-              Show levels
+              <span>Show levels</span>
+            </label>
+            <label className="toggleRow">
+              <input type="checkbox" checked={soundOn} onChange={e=>setSoundOn(e.target.checked)} />
+              <span>Sound on</span>
             </label>
             <button className="btn" onClick={addPlayerInline}>Add Player</button>
           </div>
         </div>
 
-        <div style={{marginTop:8, overflowX:'auto'}}>
-          <table style={{width:'100%', borderCollapse:'collapse'}}>
+        <div className="tableWrap">
+          <table className="adminTable">
             <thead>
-              <tr style={{textAlign:'left', background:'#0b2033', color:'#bfe0ff'}}>
-                <th style={th}>Name</th>
-                <th style={th}>Gender</th>
-                <th style={th}>Skill</th>
-                <th style={th}>Present</th>
-                <th style={th}>Benched</th>
-                <th style={th}>Last Round</th>
-                <th style={th}>Actions</th>
+              <tr>
+                <th>Name</th>
+                <th>Gender</th>
+                <th>Skill</th>
+                <th>Present</th>
+                <th>Benched</th>
+                <th>Last Round</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {players.map(p=>(
-                <tr key={p.id} style={{borderBottom:'1px solid #142335'}}>
-                  <td style={td}><input className="txt" value={p.name} onChange={e=>updatePlayerField(p.id,'name',e.target.value)} /></td>
-                  <td style={td}>
+                <tr key={p.id}>
+                  <td><input className="txt" value={p.name} onChange={e=>updatePlayerField(p.id,'name',e.target.value)} /></td>
+                  <td>
                     <select className="txt" value={p.gender||'M'} onChange={e=>updatePlayerField(p.id,'gender',e.target.value)}>
                       <option value="M">M</option>
                       <option value="F">F</option>
                     </select>
                   </td>
-                  <td style={td}><input className="txt" type="number" min={1} max={10} value={p.skill_level} onChange={e=>updatePlayerField(p.id,'skill_level',Number(e.target.value||1))} /></td>
-                  <td style={td}><input type="checkbox" checked={!!p.is_present} onChange={e=>updatePlayerField(p.id,'is_present',e.target.checked)} /></td>
-                  <td style={td}>{p.bench_count||0}</td>
-                  <td style={td}>{p.last_played_round||0}</td>
-                  <td style={td}>
+                  <td><input className="txt" type="number" min={1} max={10} value={p.skill_level} onChange={e=>updatePlayerField(p.id,'skill_level',Number(e.target.value||1))} /></td>
+                  <td><input type="checkbox" checked={!!p.is_present} onChange={e=>updatePlayerField(p.id,'is_present',e.target.checked)} /></td>
+                  <td>{p.bench_count||0}</td>
+                  <td>{p.last_played_round||0}</td>
+                  <td>
                     <button className="btn small" onClick={()=>savePlayerRow(p.id)}>Save</button>
-                    <button className="btn small danger" onClick={()=>deletePlayer(p.id)}>Delete</button>
+                    <button className="btn small danger" onClick={()=>deletePlayerRow(p.id)}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -697,7 +770,7 @@ export default function App() {
 
   function SessionScreen() {
     return (
-      <div style={{padding:'12px'}}>
+      <div className="screenPad">
         <CourtsGrid/>
         <BenchedBar/>
         <DualLists/>
@@ -708,12 +781,14 @@ export default function App() {
 
   function HomeScreen() {
     return (
-      <div style={{padding:'14px'}}>
-        <div style={{display:'flex', gap:10, justifyContent:'center'}}>
-          <button className="btn" onClick={beginNight} style={{background:'#2a6bff',color:'#fff'}}>Begin Night</button>
+      <div className="screenPad">
+        <div className="homeBtns">
+          <button className="btn primary" onClick={beginNight}>Begin Night</button>
           <button className="btn" onClick={()=>setView('session')}>Session</button>
           <button className="btn" onClick={openDisplay}>Open Display</button>
           <button className="btn" onClick={()=> admin? setAdmin(false) : requestAdmin()}>{admin?'Exit Admin':'Admin'}</button>
+          <button className="btn" onClick={()=>setSettingsOpen(true)}>Settings</button>
+          <button className="btn" onClick={toggleMode}>Mode: {mode===MATCH_MODES.BAND?'Band':'Window'}</button>
         </div>
       </div>
     );
@@ -721,51 +796,103 @@ export default function App() {
 
   function DisplayScreen() {
     return (
-      <div style={{padding:'12px'}}>
-        {/* Timer centered, big */}
-        <div style={{textAlign:'center', margin:'8px 0 12px'}}>
-          <div style={{fontSize:48, fontVariantNumeric:'tabular-nums',
-            color: (running ? '#cfe6ff' : (transition ? (timeLeft%2? '#fff':'#ff4d6d') : '#cfe6ff'))}}>
-            {transition ? `Next in ${formatTime(timeLeft)}` : `${formatTime(timeLeft)}`} &nbsp; {badge(`Round ${round}`)}
+      <div className="screenPad">
+        {/* Timer centered, big, with present count */}
+        <div className="displayHeader" style={{color: timerColor}}>
+          <div className="displayTimer">
+            {transition ? `Next in ${formatTime(timeLeft)}` : `${formatTime(timeLeft)}`}
+          </div>
+          <div className="displaySubline">
+            {badge(`Round ${round}`)} &nbsp; {badge(`${present.length} present`)}
           </div>
         </div>
         {/* Courts only */}
-        <CourtsGrid/>
+        <div className="courtsGrid displayNamesBig">
+          {matches.map(m => (
+            <div key={m.court} className="courtCard">
+              <div className="courtTop">
+                <div className="courtName">Court {m.court}</div>
+              </div>
+              <div className="teamsWrap">
+                <div>{m.team1.map(p=>chip(p, false /* never show levels on display */))}</div>
+                <div className="divider" />
+                <div>{m.team2.map(p=>chip(p, false))}</div>
+              </div>
+            </div>
+          ))}
+        </div>
         {/* Benched visible at bottom, wrapped without scroll */}
         <BenchedBar/>
       </div>
     );
   }
 
+  function SettingsModal({ open, onClose }) {
+    if (!open) return null;
+    const [locRound, setLocRound] = React.useState(Math.max(1, Math.round(roundSeconds/60)));
+    const [locTrans, setLocTrans] = React.useState(transitionSecs);
+    const [locCourts, setLocCourts] = React.useState(courts);
+    const [locWarn, setLocWarn] = React.useState(warnSecs);
+    const [locSound, setLocSound] = React.useState(soundOn);
+
+    const save = () => {
+      const roundSecs = Math.max(30, locRound*60);
+      const transSecs = Math.max(5, Number(locTrans)||30);
+      const cts = Math.min(8, Math.max(1, Number(locCourts)||4));
+      const wsecs = Math.min(roundSecs, Math.max(5, Number(locWarn)||30));
+      setRoundSeconds(roundSecs);
+      setTransitionSecs(transSecs);
+      setCourts(cts);
+      setWarnSecs(wsecs);
+      setSoundOn(locSound);
+      if (!running && !transition) setTimeLeft(roundSecs);
+      onClose();
+    };
+
+    return (
+      <div className="modalMask">
+        <div className="modalCard">
+          <h3>Settings</h3>
+          <div className="formGrid">
+            <label className="formRow">
+              <span>Round length (minutes)</span>
+              <input className="txt" type="number" min={1} max={90} value={locRound} onChange={e=>setLocRound(Number(e.target.value||1))}/>
+            </label>
+            <label className="formRow">
+              <span>Transition length (seconds)</span>
+              <input className="txt" type="number" min={5} max={120} value={locTrans} onChange={e=>setLocTrans(Number(e.target.value||30))}/>
+            </label>
+            <label className="formRow">
+              <span>Courts (1–8)</span>
+              <input className="txt" type="number" min={1} max={8} value={locCourts} onChange={e=>setLocCourts(Number(e.target.value||4))}/>
+            </label>
+            <label className="formRow">
+              <span>Warn threshold (seconds)</span>
+              <input className="txt" type="number" min={5} max={3600} value={locWarn} onChange={e=>setLocWarn(Number(e.target.value||30))}/>
+            </label>
+            <label className="toggleRow">
+              <input type="checkbox" checked={locSound} onChange={e=>setLocSound(e.target.checked)} />
+              <span>Enable sounds</span>
+            </label>
+          </div>
+          <div className="modalActions">
+            <button className="btn" onClick={onClose}>Close</button>
+            <button className="btn primary" onClick={save}>Save</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div style={{background:'#0b1420', color:'#cfe6ff', minHeight:'100vh'}}>
+    <div className="appRoot">
       <HeaderBar/>
-      {loading ? <div style={{padding:12}}>Loading...</div> :
+      {loading ? <div className="screenPad">Loading...</div> :
        isHome ? <HomeScreen/> :
        isSession ? <SessionScreen/> :
        <DisplayScreen/>}
+
+      <SettingsModal open={settingsOpen} onClose={()=>setSettingsOpen(false)} />
     </div>
   );
 }
-
-// table cell styles
-const th = { padding:'8px 10px', borderBottom:'1px solid #1b2b40' };
-const td = { padding:'6px 8px', verticalAlign:'middle' };
-
-// ------------------- tiny CSS (scoped via classNames here) -------------------
-/* You can move this into App.css if you prefer */
-const style = document.createElement('style');
-style.textContent = `
-  .btn{
-    background:#18283c; color:#cfe6ff; border:1px solid #243b58; border-radius:10px;
-    padding:8px 12px; cursor:pointer;
-  }
-  .btn:hover{ filter:brightness(1.08); }
-  .btn.danger{ background:#ff5b6b; color:#111; border-color:#ff7d89; }
-  .btn.small{ padding:6px 10px; font-size:12px; }
-
-  .txt{
-    background:#0f1a29; color:#d8ebff; border:1px solid #22364e; border-radius:8px; padding:6px 8px; width:100%;
-  }
-`;
-document.head.appendChild(style);

@@ -1,5 +1,5 @@
 /* logic.js
-   FLOminton Matchmaking (Merged Deluxe)
+   FLOminton Matchmaking (Merged Deluxe, untrimmed)
 
    Modes:
    - WINDOW: group quads by skill window (start ±2; expand only if courts can’t be filled)
@@ -20,6 +20,7 @@
    - fairnessStats(playersPresent)
    - roundDiagnostics(matches)   -> build time, court use, avg diffs, spans
    - perPlayerUniq(history)      -> unique teammates/opponents per player
+   - perPlayerUniqLastN(history) -> same but for last N rounds
    - countBackToBackBenches(benchedLog)
 */
 
@@ -338,15 +339,27 @@ export function roundDiagnostics(matches, buildMs = 0) {
   };
 }
 
-/** Unique teammates/opponents per player from history: [{round, court, team1:[...], team2:[...]}...] */
+/** All-time unique teammates/opponents per player (from history array) */
 export function perPlayerUniq(history, presentIds = new Set()) {
+  return perPlayerUniqLastN(history, Infinity, presentIds);
+}
+
+/** Unique teammates/opponents per player for last N rounds (N can be Infinity) */
+export function perPlayerUniqLastN(history, lastNRounds = Infinity, presentIds = new Set()) {
   const teamMates = new Map(); // id -> Set(ids)
   const opponents = new Map();
   const add = (map, id, peer) => {
     if (!map.has(id)) map.set(id, new Set());
     map.get(id).add(peer);
   };
-  for (const h of history || []) {
+
+  // Filter to last N rounds
+  const rounds = Array.from(new Set((history||[]).map(h=>h.round))).sort((a,b)=>a-b);
+  const maxR = rounds.length ? rounds[rounds.length-1] : 0;
+  const minKeep = isFinite(lastNRounds) ? Math.max(1, maxR - lastNRounds + 1) : -Infinity;
+  const filt = (history||[]).filter(h => h.round >= minKeep);
+
+  for (const h of filt) {
     const t1 = h.team1 || []; const t2 = h.team2 || [];
     for (const a of t1) for (const b of t1) if (a.id !== b.id) add(teamMates, a.id, b.id);
     for (const a of t2) for (const b of t2) if (a.id !== b.id) add(teamMates, a.id, b.id);
@@ -354,7 +367,7 @@ export function perPlayerUniq(history, presentIds = new Set()) {
   }
   const out = {};
   const allIds = presentIds.size ? [...presentIds] : Array.from(new Set(
-    (history||[]).flatMap(h => [...(h.team1||[]), ...(h.team2||[])]).map(p => p.id)
+    (filt||[]).flatMap(h => [...(h.team1||[]), ...(h.team2||[])]).map(p => p.id)
   ));
   for (const id of allIds) {
     out[id] = {
@@ -367,12 +380,10 @@ export function perPlayerUniq(history, presentIds = new Set()) {
 
 /** Count back-to-back bench streaks from an array of round benches: [{round, ids:Set()}] */
 export function countBackToBackBenches(benchedSequence) {
-  // returns map id -> { worst: n, count: nLatest }
   const worst = new Map();
   const cur = new Map();
   for (const step of (benchedSequence || [])) {
     const ids = step.ids || new Set();
-    // increment streak for those benched now; reset others
     const allIds = new Set([...cur.keys(), ...ids]);
     for (const id of allIds) {
       const was = cur.get(id) || 0;
