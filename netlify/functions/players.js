@@ -1,32 +1,49 @@
 // netlify/functions/players.js
-// Requires Netlify env vars:
+// Netlify Functions v2 "Fetch" style handler (req -> Response)
+// Requires env vars on Netlify:
 //   SUPABASE_URL
-//   SUPABASE_SERVICE_ROLE   (preferred)  OR SUPABASE_ANON_KEY (with RLS policies allowing the ops you need)
+//   SUPABASE_SERVICE_ROLE   (preferred)  OR SUPABASE_ANON_KEY
 
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
+const url  = process.env.SUPABASE_URL;
+const key  = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY;
 
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  auth: { persistSession: false }
-});
+if (!url || !key) {
+  // Fail fast so logs are clear
+  console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE/ANON_KEY');
+}
 
-export default async function handler(req, res) {
+const supabase = createClient(url, key, { auth: { persistSession: false } });
+
+// Helper to return JSON Responses
+function json(status, data) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+export default async (request, context) => {
   try {
-    if (req.method === 'GET') {
+    const { method } = request;
+
+    if (method === 'GET') {
       const { data, error } = await supabase
         .from('players')
         .select('*')
         .order('name', { ascending: true });
+
       if (error) throw error;
-      return res.status(200).json(data || []);
+      return json(200, data || []);
     }
 
-    if (req.method === 'PATCH') {
-      const body = await readBody(req);
+    if (method === 'PATCH') {
+      let body = {};
+      try { body = await request.json(); } catch {}
       const updates = Array.isArray(body?.updates) ? body.updates : [];
       const results = [];
+
       for (const u of updates) {
         const { id, fields } = u || {};
         if (!id) continue;
@@ -39,48 +56,37 @@ export default async function handler(req, res) {
         if (error) throw error;
         results.push(data);
       }
-      return res.status(200).json({ ok: true, count: results.length, rows: results });
+      return json(200, { ok: true, count: results.length, rows: results });
     }
 
-    if (req.method === 'POST') {
-      const body = await readBody(req);
+    if (method === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
       const players = Array.isArray(body?.players) ? body.players : [];
-      if (!players.length) return res.status(400).json({ error: 'No players provided' });
+      if (!players.length) return json(400, { error: 'No players provided' });
+
       const { data, error } = await supabase
         .from('players')
         .upsert(players, { onConflict: 'id' })
         .select();
       if (error) throw error;
-      return res.status(200).json({ ok: true, rows: data });
+      return json(200, { ok: true, rows: data });
     }
 
-    if (req.method === 'DELETE') {
-      const body = await readBody(req);
+    if (method === 'DELETE') {
+      let body = {};
+      try { body = await request.json(); } catch {}
       const id = body?.id;
-      if (!id) return res.status(400).json({ error: 'Missing id' });
-      const { error } = await supabase
-        .from('players')
-        .delete()
-        .eq('id', id);
+      if (!id) return json(400, { error: 'Missing id' });
+
+      const { error } = await supabase.from('players').delete().eq('id', id);
       if (error) throw error;
-      return res.status(200).json({ ok: true });
+      return json(200, { ok: true });
     }
 
-    res.status(405).json({ error: 'Method not allowed' });
+    return json(405, { error: 'Method not allowed' });
   } catch (err) {
     console.error('players function error:', err);
-    res.status(500).json({ error: String(err?.message || err) });
+    return json(500, { error: String(err?.message || err) });
   }
-}
-
-// Netlify body reader (works for all verbs)
-async function readBody(req) {
-  return new Promise((resolve) => {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
-      try { resolve(JSON.parse(body || '{}')); }
-      catch { resolve({}); }
-    });
-  });
-}
+};
