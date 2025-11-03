@@ -173,3 +173,6 @@ a, button{ user-select:none; }
   .toolbar{ flex-direction:column; gap:10px; align-items:flex-start; }
   .toolbar-left{ flex-wrap:wrap; }
 }
+.btn { padding: 8px 12px; border: 1px solid #374151; background: #0b1220; color:#e5e7eb; border-radius:8px; }
+.btn:hover { background:#111826; }
+.toolbar { display:flex; align-items:center; gap:8px; padding:8px; border-bottom:1px solid #1f2937; }

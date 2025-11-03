@@ -32,3 +32,4 @@ LEFT TO DO:
     - better name for 'Start Night' and/or 'Resume' considering how they function now
     - when timer reaches 00:00 let the time blink red / white
 - Testing
+
