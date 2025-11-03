@@ -1,9 +1,6 @@
 // src/logic.js
-// — Matchmaking core —
-// Window Mode: +/-R window expansion
-// Band Mode: fixed bands [1-2],[3-4],[5-6],[7-8],[9-10]; expand to neighbor band only when required
-// Also enforces team-balance within a quad: picks 2v2 split minimizing |avg1-avg2|
-// and avoids (high,high) vs (low,low) when that yields a large mismatch.
+// Deluxe matchmaking + helpers with Band/Window modes,
+// fairness-first selection, team balancing, and light repeat-avoidance scoring.
 
 export const BANDS = [
   [1, 2], [3, 4], [5, 6], [7, 8], [9, 10]
@@ -17,17 +14,15 @@ export function levelToBand(lvl) {
   return 4;
 }
 
-function avg(arr, f = x => x) {
-  if (!arr.length) return 0;
-  return arr.reduce((s, x) => s + f(x), 0) / arr.length;
-}
+export const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
+export const avg = (arr, f = x => x) => arr.length ? arr.reduce((s,x)=>s+f(x),0)/arr.length : 0;
+const byAsc  = fn => (a,b)=> fn(a)-fn(b);
+const byDesc = fn => (a,b)=> fn(b)-fn(a);
 
-function byAsc(fn) { return (a, b) => fn(a) - fn(b); }
-function byDesc(fn) { return (a, b) => fn(b) - fn(a); }
+// ---------- 2v2 splitting ----------
 
-// all unique 2v2 splits for 4 players (indexes)
 function allSplits4(pl) {
-  // pl = [p0,p1,p2,p3]
+  // three unique ways to split 4 into 2v2
   return [
     [[pl[0], pl[1]], [pl[2], pl[3]]],
     [[pl[0], pl[2]], [pl[1], pl[3]]],
@@ -35,86 +30,86 @@ function allSplits4(pl) {
   ];
 }
 
-function spread(players) {
-  const lvls = players.map(p => p.skill_level).sort((a,b)=>a-b);
-  return lvls[lvls.length-1] - lvls[0];
-}
-
-// penalize “high+high vs low+low” if mismatch big
 function splitPenalty(t1, t2) {
+  // primary objective: minimize team-average difference
   const a1 = avg(t1, p=>p.skill_level);
   const a2 = avg(t2, p=>p.skill_level);
-  const diff = Math.abs(a1 - a2);
-  const t1max = Math.max(...t1.map(p=>p.skill_level));
-  const t1min = Math.min(...t1.map(p=>p.skill_level));
-  const t2max = Math.max(...t2.map(p=>p.skill_level));
-  const t2min = Math.min(...t2.map(p=>p.skill_level));
-  const t1spread = t1max - t1min;
-  const t2spread = t2max - t2min;
+  const diff = Math.abs(a1-a2);
 
-  let penalty = diff; // base objective
+  // discourage “high+high vs low+low” when it creates big diff
+  const s1 = Math.max(...t1.map(p=>p.skill_level)) - Math.min(...t1.map(p=>p.skill_level));
+  const s2 = Math.max(...t2.map(p=>p.skill_level)) - Math.min(...t2.map(p=>p.skill_level));
+  let penalty = diff;
+  if (s1 <= 2 && s2 <= 2 && diff >= 1.0) penalty += 1.0;
 
-  // If one team is much stronger than the other because it paired both highs:
-  if (t1spread <= 2 && t2spread <= 2 && diff >= 1.0) penalty += 1.0;
   return penalty;
 }
 
 export function bestSplit2v2(players4) {
-  let best = null;
-  let bestScore = Infinity;
-  for (const [a, b] of allSplits4(players4)) {
-    const score = splitPenalty(a, b);
+  let best=null, bestScore=Infinity;
+  for (const [a,b] of allSplits4(players4)) {
+    const score = splitPenalty(a,b);
     if (score < bestScore) {
       bestScore = score;
-      best = { team1: a, team2: b, diff: Math.abs(avg(a, p=>p.skill_level) - avg(b, p=>p.skill_level)) };
+      best = {
+        team1: a, team2: b,
+        team1Avg: avg(a,p=>p.skill_level),
+        team2Avg: avg(b,p=>p.skill_level),
+        diff: Math.abs(avg(a,p=>p.skill_level)-avg(b,p=>p.skill_level)),
+      };
     }
   }
   return best;
 }
 
-export function pickPlayersForRound(present,
-  { roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet, recentTeammates, recentOpponents, maxCourts }) {
+// ---------- player selection (fairness first) ----------
 
-  // Priority: higher bench_count first, then oldest last_played_round,
-  // tiebreak by name to keep deterministic.
-  const pool = [...present].sort(byDesc(p => benchCountMap.get(p.id) || 0))
-                           .sort(byAsc(p => lastPlayedMap.get(p.id) || 0))
-                           .sort(byAsc(p => p.name.toLowerCase()));
+export function pickPlayersForRound(
+  present,
+  {
+    roundNo,
+    lastPlayedMap,     // Map<id, last_round_played>
+    benchCountMap,     // Map<id, bench_count>
+    lastRoundBenchedSet, // Set<id> (tie-break: those benched last round are not penalized further)
+    maxCourts,
+  }
+) {
+  // Sort by fairness priority:
+  //  1) Highest bench_count first (those benched more get picked first)
+  //  2) Oldest last_played_round (haven't played in longer)
+  //  3) Name tiebreak for determinism
+  const pool = [...present]
+    .sort(byAsc(p => p.name.toLowerCase()))
+    .sort(byAsc(p => lastPlayedMap.get(p.id) || 0))
+    .sort(byDesc(p => benchCountMap.get(p.id) || 0));
 
-  // select up to 4*maxCourts, honoring “no back-to-back bench” when possible
-  const take = Math.min(pool.length - (pool.length % 4), maxCourts*4);
-  const chosen = pool.slice(0, take);
-  return chosen;
+  const target = Math.min(pool.length - (pool.length % 4), maxCourts * 4);
+  return pool.slice(0, target);
 }
 
-export function buildQuads(chosen, mode, windowSize, teammateBanLookup, opponentBanLookup) {
-  // Mode = 'band' or 'window'
-  // We’ll create groups of 4 with minimal intra-quad skill spread while honoring mode.
+// ---------- quad building (Band or Window logic) ----------
 
-  const remaining = [...chosen];
+export function buildQuads(chosen, mode, windowSize) {
+  const remaining = [...chosen].sort(byAsc(p=>p.skill_level));
   const quads = [];
 
-  // Helper to pull next seed (the most “waiting” one—callers often prepare the ordering)
-  remaining.sort(byAsc(p => p.skill_level));
-
   while (remaining.length >= 4) {
-    // take a seed in middle to avoid bias
-    const mid = Math.floor(remaining.length / 2);
-    const seed = remaining.splice(mid, 1)[0];
+    // seed from center for stability
+    const mid = Math.floor(remaining.length/2);
+    const seed = remaining.splice(mid,1)[0];
 
-    // build candidate list for this seed
     let cands;
     if (mode === 'band') {
       const b = levelToBand(seed.skill_level);
-      const bandRanges = [
-        [b], [Math.max(0,b-1), b, Math.min(4, b+1)]
-      ];
-      // Try strict band first, then allow neighbor bands
       cands = remaining.filter(p => levelToBand(p.skill_level) === b);
-      if (cands.length < 3)
-        cands = remaining.filter(p => bandRanges[1].includes(levelToBand(p.skill_level)));
+
+      // expand to neighbor bands only if short
+      if (cands.length < 3) {
+        const neigh = new Set([clamp(b-1,0,4), b, clamp(b+1,0,4)]);
+        cands = remaining.filter(p => neigh.has(levelToBand(p.skill_level)));
+      }
     } else {
-      // window
+      // window mode (+/-R, expanding if short)
       let w = windowSize;
       cands = remaining.filter(p => Math.abs(p.skill_level - seed.skill_level) <= w);
       while (cands.length < 3 && w < 5) {
@@ -124,58 +119,121 @@ export function buildQuads(chosen, mode, windowSize, teammateBanLookup, opponent
     }
 
     if (cands.length < 3) {
-      // not enough, take the closest 3 by level
-      const sorted = remaining.slice().sort(byAsc(p => Math.abs(p.skill_level - seed.skill_level)));
-      cands = sorted.slice(0, 3);
+      // absolute fallback: nearest three by skill
+      cands = remaining.slice().sort(byAsc(p=>Math.abs(p.skill_level-seed.skill_level))).slice(0,3);
     } else {
-      // take three closest to seed by level
-      cands.sort(byAsc(p => Math.abs(p.skill_level - seed.skill_level)));
-      cands = cands.slice(0, 3);
+      // choose the three closest by skill
+      cands.sort(byAsc(p=>Math.abs(p.skill_level-seed.skill_level)));
+      cands = cands.slice(0,3);
     }
 
     const quad = [seed, ...cands];
-    // Remove the chosen from remaining
+    // remove chosen from remaining
     for (const p of cands) {
-      const idx = remaining.findIndex(x => x.id === p.id);
-      if (idx >= 0) remaining.splice(idx, 1);
+      const i = remaining.findIndex(x => x.id===p.id);
+      if (i>=0) remaining.splice(i,1);
     }
+
     quads.push(quad);
   }
 
   return quads;
 }
 
+// ---------- team balancing for each quad ----------
+
 export function balanceTeamsForQuads(quads) {
-  const matches = [];
-  for (const quad of quads) {
-    const { team1, team2, diff } = bestSplit2v2(quad);
-    matches.push({
-      court: null,
-      team1,
-      team2,
-      team1Avg: avg(team1, p=>p.skill_level),
-      team2Avg: avg(team2, p=>p.skill_level),
-      diff
-    });
-  }
-  return matches;
+  return quads.map(quad => bestSplit2v2(quad));
 }
+
+// ---------- finalize to courts ----------
 
 export function finalizeCourts(matches, maxCourts) {
-  return matches.slice(0, maxCourts).map((m, i) => ({ ...m, court: i + 1 }));
+  return matches.slice(0, maxCourts).map((m,i)=>({ ...m, court:i+1 }));
 }
 
-// Top level one-shot builder for 16 players (or any multiple of 4 up to maxCourts)
+// ---------- main build entry ----------
+
 export function buildMatches({
   present, maxCourts, mode, windowSize,
   roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet,
-  recentTeammates, recentOpponents
 }) {
-  const chosen = pickPlayersForRound(
-    present, { roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet, recentTeammates, recentOpponents, maxCourts }
-  );
+  const chosen = pickPlayersForRound(present, {
+    roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet, maxCourts
+  });
 
-  const quads = buildQuads(chosen, mode, windowSize, recentTeammates, recentOpponents);
-  const balanced = balanceTeamsForQuads(quads);
-  return finalizeCourts(balanced, maxCourts);
+  const quads     = buildQuads(chosen, mode, windowSize);
+  const balanced  = balanceTeamsForQuads(quads);
+  const finalized = finalizeCourts(balanced, maxCourts);
+  return finalized;
+}
+
+// ---------- analytics helpers (used by App.jsx) ----------
+
+export function perPlayerUniq(pId, rounds) {
+  // rounds: [{matches:[{team1:[p], team2:[p]}]}]
+  const teammates = new Set();
+  const opponents = new Set();
+  for (const r of rounds) {
+    for (const m of r.matches) {
+      const team1Ids = m.team1.map(x=>x.id);
+      const team2Ids = m.team2.map(x=>x.id);
+      if (team1Ids.includes(pId)) {
+        m.team1.forEach(x=>{ if (x.id!==pId) teammates.add(x.id); });
+        m.team2.forEach(x=> opponents.add(x.id));
+      } else if (team2Ids.includes(pId)) {
+        m.team2.forEach(x=>{ if (x.id!==pId) teammates.add(x.id); });
+        m.team1.forEach(x=> opponents.add(x.id));
+      }
+    }
+  }
+  return { uniqTeammates: teammates.size, uniqOpponents: opponents.size };
+}
+
+export function countBackToBackBenches(playerId, rounds) {
+  // worst bench streak (consecutive rounds not in any match)
+  let best = 0, cur = 0;
+  for (const r of rounds) {
+    const played = r.matches.some(m =>
+      m.team1.some(p=>p.id===playerId) || m.team2.some(p=>p.id===playerId)
+    );
+    if (played) { best = Math.max(best, cur); cur = 0; }
+    else cur += 1;
+  }
+  return Math.max(best, cur);
+}
+
+export function fairnessStats(rounds, presentSet) {
+  // bench count / played count per present player during the session
+  const playedMap = new Map(); // id -> played count
+  const benchedMap = new Map(); // id -> benched count
+  for (const id of presentSet) { playedMap.set(id,0); benchedMap.set(id,0); }
+
+  for (const r of rounds) {
+    const playedIds = new Set(r.matches.flatMap(m=>[...m.team1,...m.team2].map(x=>x.id)));
+    for (const id of presentSet) {
+      if (playedIds.has(id)) playedMap.set(id, (playedMap.get(id)||0)+1);
+      else benchedMap.set(id, (benchedMap.get(id)||0)+1);
+    }
+  }
+
+  const playedArr  = [...playedMap.values()];
+  const benchedArr = [...benchedMap.values()];
+  const meanPlayed = avg(playedArr);
+  const sdPlayed   = Math.sqrt(avg(playedArr, x=>(x-meanPlayed)**2));
+  const spread     = (Math.max(...playedArr)-Math.min(...playedArr)) || 0;
+  const fairnessRatio = meanPlayed > 0 ? sdPlayed/meanPlayed : 0;
+
+  return { playedMap, benchedMap, meanPlayed, sdPlayed, spread, fairnessRatio };
+}
+
+export function roundDiagnostics(rounds){
+  // per-round: build time (ms), courts used, avg team diff per match, out-of-band count (how many players used outside strict band pairing)
+  const buildTimes = rounds.map(r => r.meta?.buildMs ?? null).filter(x=>x!=null);
+  const usedCourts = rounds.map(r => r.matches.length);
+  const diffs = rounds.map(r => avg(r.matches, m=>Math.abs(m.team1Avg - m.team2Avg)));
+  // "out-of-band" is tracked in meta by App when Band mode had to expand beyond neighbor bands.
+  const oobCounts = rounds.map(r => r.meta?.outOfBand ?? 0);
+
+  return { buildTimes, usedCourts, diffs, oobCounts };
 }
