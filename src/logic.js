@@ -1,239 +1,345 @@
-// src/logic.js
-// Deluxe matchmaking + helpers with Band/Window modes,
-// fairness-first selection, team balancing, and light repeat-avoidance scoring.
+// logic.js — matchmaking + analytics (Band / Window modes)
 
-export const BANDS = [
-  [1, 2], [3, 4], [5, 6], [7, 8], [9, 10]
-];
+/**
+ * Player shape (expected):
+ * {
+ *   id, name, gender: 'M'|'F',
+ *   skill_level: 1..10,
+ *   is_present: bool,
+ *   bench_count: number,
+ *   last_played_round: number
+ * }
+ */
 
-export function levelToBand(lvl) {
-  if (lvl <= 2) return 0;
-  if (lvl <= 4) return 1;
-  if (lvl <= 6) return 2;
-  if (lvl <= 8) return 3;
-  return 4;
+const rnd = (min, max) => Math.random() * (max - min) + min;
+const shuffle = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+function bandOf(level) {
+  if (level <= 2) return 1;
+  if (level <= 4) return 2;
+  if (level <= 6) return 3;
+  if (level <= 8) return 4;
+  return 5; // 9-10
 }
 
-export const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
-export const avg = (arr, f = x => x) => arr.length ? arr.reduce((s,x)=>s+f(x),0)/arr.length : 0;
-const byAsc  = fn => (a,b)=> fn(a)-fn(b);
-const byDesc = fn => (a,b)=> fn(b)-fn(a);
-
-// ---------- 2v2 splitting ----------
-
-function allSplits4(pl) {
-  // three unique ways to split 4 into 2v2
-  return [
-    [[pl[0], pl[1]], [pl[2], pl[3]]],
-    [[pl[0], pl[2]], [pl[1], pl[3]]],
-    [[pl[0], pl[3]], [pl[1], pl[2]]],
-  ];
+function avgTeam(players) {
+  if (!players.length) return 0;
+  return players.reduce((s, p) => s + (p.skill_level || 0), 0) / players.length;
 }
 
 function splitPenalty(t1, t2) {
-  // primary objective: minimize team-average difference
-  const a1 = avg(t1, p=>p.skill_level);
-  const a2 = avg(t2, p=>p.skill_level);
-  const diff = Math.abs(a1-a2);
-
-  // discourage “high+high vs low+low” when it creates big diff
-  const s1 = Math.max(...t1.map(p=>p.skill_level)) - Math.min(...t1.map(p=>p.skill_level));
-  const s2 = Math.max(...t2.map(p=>p.skill_level)) - Math.min(...t2.map(p=>p.skill_level));
-  let penalty = diff;
-  if (s1 <= 2 && s2 <= 2 && diff >= 1.0) penalty += 1.0;
-
-  return penalty;
+  // Encourage balanced averages across teams
+  const d = Math.abs(avgTeam(t1) - avgTeam(t2));
+  // 0 => perfect, grows with difference
+  return d;
 }
 
-export function bestSplit2v2(players4) {
-  let best=null, bestScore=Infinity;
-  for (const [a,b] of allSplits4(players4)) {
-    const score = splitPenalty(a,b);
-    if (score < bestScore) {
-      bestScore = score;
-      best = {
-        team1: a, team2: b,
-        team1Avg: avg(a,p=>p.skill_level),
-        team2Avg: avg(b,p=>p.skill_level),
-        diff: Math.abs(avg(a,p=>p.skill_level)-avg(b,p=>p.skill_level)),
-      };
-    }
+function fairnessScore(p) {
+  // Higher score => higher priority to play now
+  // Prioritize highest bench_count; if tie, older last_played goes first
+  const bc = p.bench_count || 0;
+  const last = p.last_played_round || 0;
+  return bc * 1000 - last; // big weight on bench_count
+}
+
+function groupByBand(players) {
+  const map = new Map();
+  for (const p of players) {
+    const b = bandOf(p.skill_level || 5);
+    if (!map.has(b)) map.set(b, []);
+    map.get(b).push(p);
   }
-  return best;
+  for (const [b, list] of map) {
+    list.sort((a, b) => fairnessScore(b) - fairnessScore(a));
+  }
+  return map;
 }
 
-// ---------- player selection (fairness first) ----------
+function takeN(arr, n) {
+  const out = arr.splice(0, n);
+  return out.length === n ? out : null;
+}
 
-export function pickPlayersForRound(
-  present,
-  {
-    roundNo,
-    lastPlayedMap,     // Map<id, last_round_played>
-    benchCountMap,     // Map<id, bench_count>
-    lastRoundBenchedSet, // Set<id> (tie-break: those benched last round are not penalized further)
+function buildBandMatches(input) {
+  const {
+    present,
     maxCourts,
-  }
-) {
-  // Sort by fairness priority:
-  //  1) Highest bench_count first (those benched more get picked first)
-  //  2) Oldest last_played_round (haven't played in longer)
-  //  3) Name tiebreak for determinism
-  const pool = [...present]
-    .sort(byAsc(p => p.name.toLowerCase()))
-    .sort(byAsc(p => lastPlayedMap.get(p.id) || 0))
-    .sort(byDesc(p => benchCountMap.get(p.id) || 0));
+    roundNo,
+    lastPlayedMap,
+    benchCountMap,
+    lastRoundBenchedSet,
+  } = input;
 
-  const target = Math.min(pool.length - (pool.length % 4), maxCourts * 4);
-  return pool.slice(0, target);
-}
-
-// ---------- quad building (Band or Window logic) ----------
-
-export function buildQuads(chosen, mode, windowSize) {
-  const remaining = [...chosen].sort(byAsc(p=>p.skill_level));
-  const quads = [];
-
-  while (remaining.length >= 4) {
-    // seed from center for stability
-    const mid = Math.floor(remaining.length/2);
-    const seed = remaining.splice(mid,1)[0];
-
-    let cands;
-    if (mode === 'band') {
-      const b = levelToBand(seed.skill_level);
-      cands = remaining.filter(p => levelToBand(p.skill_level) === b);
-
-      // expand to neighbor bands only if short
-      if (cands.length < 3) {
-        const neigh = new Set([clamp(b-1,0,4), b, clamp(b+1,0,4)]);
-        cands = remaining.filter(p => neigh.has(levelToBand(p.skill_level)));
-      }
-    } else {
-      // window mode (+/-R, expanding if short)
-      let w = windowSize;
-      cands = remaining.filter(p => Math.abs(p.skill_level - seed.skill_level) <= w);
-      while (cands.length < 3 && w < 5) {
-        w += 1;
-        cands = remaining.filter(p => Math.abs(p.skill_level - seed.skill_level) <= w);
-      }
-    }
-
-    if (cands.length < 3) {
-      // absolute fallback: nearest three by skill
-      cands = remaining.slice().sort(byAsc(p=>Math.abs(p.skill_level-seed.skill_level))).slice(0,3);
-    } else {
-      // choose the three closest by skill
-      cands.sort(byAsc(p=>Math.abs(p.skill_level-seed.skill_level)));
-      cands = cands.slice(0,3);
-    }
-
-    const quad = [seed, ...cands];
-    // remove chosen from remaining
-    for (const p of cands) {
-      const i = remaining.findIndex(x => x.id===p.id);
-      if (i>=0) remaining.splice(i,1);
-    }
-
-    quads.push(quad);
-  }
-
-  return quads;
-}
-
-// ---------- team balancing for each quad ----------
-
-export function balanceTeamsForQuads(quads) {
-  return quads.map(quad => bestSplit2v2(quad));
-}
-
-// ---------- finalize to courts ----------
-
-export function finalizeCourts(matches, maxCourts) {
-  return matches.slice(0, maxCourts).map((m,i)=>({ ...m, court:i+1 }));
-}
-
-// ---------- main build entry ----------
-
-export function buildMatches({
-  present, maxCourts, mode, windowSize,
-  roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet,
-}) {
-  const chosen = pickPlayersForRound(present, {
-    roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet, maxCourts
-  });
-
-  const quads     = buildQuads(chosen, mode, windowSize);
-  const balanced  = balanceTeamsForQuads(quads);
-  const finalized = finalizeCourts(balanced, maxCourts);
-  return finalized;
-}
-
-// ---------- analytics helpers (used by App.jsx) ----------
-
-export function perPlayerUniq(pId, rounds) {
-  // rounds: [{matches:[{team1:[p], team2:[p]}]}]
-  const teammates = new Set();
-  const opponents = new Set();
-  for (const r of rounds) {
-    for (const m of r.matches) {
-      const team1Ids = m.team1.map(x=>x.id);
-      const team2Ids = m.team2.map(x=>x.id);
-      if (team1Ids.includes(pId)) {
-        m.team1.forEach(x=>{ if (x.id!==pId) teammates.add(x.id); });
-        m.team2.forEach(x=> opponents.add(x.id));
-      } else if (team2Ids.includes(pId)) {
-        m.team2.forEach(x=>{ if (x.id!==pId) teammates.add(x.id); });
-        m.team1.forEach(x=> opponents.add(x.id));
-      }
-    }
-  }
-  return { uniqTeammates: teammates.size, uniqOpponents: opponents.size };
-}
-
-export function countBackToBackBenches(playerId, rounds) {
-  // worst bench streak (consecutive rounds not in any match)
-  let best = 0, cur = 0;
-  for (const r of rounds) {
-    const played = r.matches.some(m =>
-      m.team1.some(p=>p.id===playerId) || m.team2.some(p=>p.id===playerId)
+  // Sort present by bench priority first
+  const pool = present
+    .slice()
+    .sort(
+      (a, b) =>
+        fairnessScore(b) - fairnessScore(a) || a.name.localeCompare(b.name)
     );
-    if (played) { best = Math.max(best, cur); cur = 0; }
-    else cur += 1;
+
+  const byBand = groupByBand(pool);
+  const courts = [];
+  const used = new Set();
+
+  // Helper: try form one court from a band +/- 1 neighbor with expansion
+  function formCourt() {
+    // Select highest-need players first by band blocks
+    const bands = [1, 2, 3, 4, 5];
+
+    // For each band, try strict band, then expand to neighbors if needed
+    for (const b of bands) {
+      for (let expand = 0; expand <= 3; expand++) {
+        // Build candidate list from band +/- expand
+        const candidates = [];
+        for (let k = b - expand; k <= b + expand; k++) {
+          if (k >= 1 && k <= 5 && byBand.get(k)?.length) {
+            // add a copy (we won't mutate storage lists yet)
+            candidates.push(...byBand.get(k).filter((p) => !used.has(p.id)));
+          }
+        }
+        if (candidates.length < 4) continue;
+
+        // We will pick 4 by highest fairness, but keep them near b
+        candidates.sort(
+          (a, b) =>
+            fairnessScore(b) - fairnessScore(a) ||
+            Math.abs(bandOf(a.skill_level) - b) -
+              Math.abs(bandOf(b.skill_level) - b)
+        );
+
+        // pick top 4
+        const four = candidates.slice(0, 4);
+        // test team splits minimizing avg diff
+        const combos = [
+          [ [four[0], four[3]], [four[1], four[2]] ],
+          [ [four[0], four[1]], [four[2], four[3]] ],
+          [ [four[0], four[2]], [four[1], four[3]] ],
+        ];
+
+        let best = null;
+        let bestCost = 1e9;
+        for (const [t1, t2] of combos) {
+          const cost = splitPenalty(t1, t2);
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = [t1, t2];
+          }
+        }
+        if (!best) continue;
+
+        // lock these four
+        for (const p of four) used.add(p.id);
+
+        return {
+          team1: best[0],
+          team2: best[1],
+          team1Avg: avgTeam(best[0]),
+          team2Avg: avgTeam(best[1]),
+        };
+      }
+    }
+    return null;
   }
-  return Math.max(best, cur);
+
+  for (let c = 1; c <= maxCourts; c++) {
+    const court = formCourt();
+    if (!court) break;
+    courts.push({ court: c, ...court });
+  }
+
+  return courts;
 }
 
-export function fairnessStats(rounds, presentSet) {
-  // bench count / played count per present player during the session
-  const playedMap = new Map(); // id -> played count
-  const benchedMap = new Map(); // id -> benched count
-  for (const id of presentSet) { playedMap.set(id,0); benchedMap.set(id,0); }
+function buildWindowMatches(input) {
+  const {
+    present,
+    maxCourts,
+    roundNo,
+    windowSize,
+    lastPlayedMap,
+    benchCountMap,
+    lastRoundBenchedSet,
+  } = input;
 
-  for (const r of rounds) {
-    const playedIds = new Set(r.matches.flatMap(m=>[...m.team1,...m.team2].map(x=>x.id)));
-    for (const id of presentSet) {
-      if (playedIds.has(id)) playedMap.set(id, (playedMap.get(id)||0)+1);
-      else benchedMap.set(id, (benchedMap.get(id)||0)+1);
+  const pool = present
+    .slice()
+    .sort(
+      (a, b) =>
+        fairnessScore(b) - fairnessScore(a) || a.name.localeCompare(b.name)
+    );
+
+  // Build a graph of possible links within current radius, expanding as needed
+  function feasibleQuad(radius) {
+    // Find top four that can be grouped within ±radius
+    for (let i = 0; i < pool.length; i++) {
+      const a = pool[i];
+      if (!a || a.__used) continue;
+      const group = [a];
+      for (let j = i + 1; j < pool.length && group.length < 4; j++) {
+        const b = pool[j];
+        if (!b || b.__used) continue;
+        if (Math.abs(a.skill_level - b.skill_level) <= radius) {
+          group.push(b);
+        }
+      }
+      if (group.length === 4) {
+        // decide best split
+        const [p0, p1, p2, p3] = group;
+        const combos = [
+          [[p0, p3], [p1, p2]],
+          [[p0, p1], [p2, p3]],
+          [[p0, p2], [p1, p3]],
+        ];
+        let best = null;
+        let bestCost = 1e9;
+        for (const [t1, t2] of combos) {
+          const cost = splitPenalty(t1, t2);
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = [t1, t2];
+          }
+        }
+        for (const p of group) p.__used = true;
+        return {
+          team1: best[0],
+          team2: best[1],
+          team1Avg: avgTeam(best[0]),
+          team2Avg: avgTeam(best[1]),
+        };
+      }
+    }
+    return null;
+  }
+
+  const courts = [];
+  let radius = windowSize ?? 2;
+  for (let c = 1; c <= maxCourts; c++) {
+    let court = feasibleQuad(radius);
+    // expand gradually if we can't fill
+    while (!court && radius < 10) {
+      radius += 1;
+      court = feasibleQuad(radius);
+    }
+    if (!court) break;
+    courts.push({ court: c, ...court });
+  }
+
+  // cleanup marks
+  for (const p of pool) delete p.__used;
+  return courts;
+}
+
+/**
+ * buildMatches(input)
+ * input = {
+ *   present, maxCourts, mode: 'band'|'window', windowSize,
+ *   roundNo, lastPlayedMap, benchCountMap, lastRoundBenchedSet
+ * }
+ */
+export function buildMatches(input) {
+  const mode = input.mode || 'band';
+  if (mode === 'window') return buildWindowMatches(input);
+  return buildBandMatches(input);
+}
+
+// -------------------- Analytics / diagnostics --------------------
+
+export function fairnessStats(sessionRounds, presentIdSet) {
+  // count per player played & benched
+  const playedMap = new Map();
+  const benchedMap = new Map();
+
+  for (const id of presentIdSet) {
+    playedMap.set(id, 0);
+    benchedMap.set(id, 0);
+  }
+
+  for (const r of sessionRounds) {
+    const onCourt = new Set();
+    for (const m of r.matches) {
+      for (const p of [...m.team1, ...m.team2]) {
+        onCourt.add(p.id);
+      }
+    }
+    for (const id of presentIdSet) {
+      if (onCourt.has(id)) {
+        playedMap.set(id, (playedMap.get(id) || 0) + 1);
+      } else {
+        benchedMap.set(id, (benchedMap.get(id) || 0) + 1);
+      }
     }
   }
 
-  const playedArr  = [...playedMap.values()];
-  const benchedArr = [...benchedMap.values()];
-  const meanPlayed = avg(playedArr);
-  const sdPlayed   = Math.sqrt(avg(playedArr, x=>(x-meanPlayed)**2));
-  const spread     = (Math.max(...playedArr)-Math.min(...playedArr)) || 0;
-  const fairnessRatio = meanPlayed > 0 ? sdPlayed/meanPlayed : 0;
+  const playedArr = [...playedMap.values()];
+  const meanPlayed =
+    playedArr.reduce((s, x) => s + x, 0) / (playedArr.length || 1);
+  const sdPlayed = Math.sqrt(
+    (playedArr.reduce((s, x) => s + (x - meanPlayed) ** 2, 0) /
+      (playedArr.length || 1)) || 0
+  );
+  const spread =
+    (playedArr.length ? Math.max(...playedArr) - Math.min(...playedArr) : 0) ||
+    0;
+  const fairnessRatio = meanPlayed ? sdPlayed / meanPlayed : 0;
 
   return { playedMap, benchedMap, meanPlayed, sdPlayed, spread, fairnessRatio };
 }
 
-export function roundDiagnostics(rounds){
-  // per-round: build time (ms), courts used, avg team diff per match, out-of-band count (how many players used outside strict band pairing)
-  const buildTimes = rounds.map(r => r.meta?.buildMs ?? null).filter(x=>x!=null);
-  const usedCourts = rounds.map(r => r.matches.length);
-  const diffs = rounds.map(r => avg(r.matches, m=>Math.abs(m.team1Avg - m.team2Avg)));
-  // "out-of-band" is tracked in meta by App when Band mode had to expand beyond neighbor bands.
-  const oobCounts = rounds.map(r => r.meta?.outOfBand ?? 0);
+export function roundDiagnostics(sessionRounds) {
+  const buildTimes = [];
+  const usedCourts = [];
+  const diffs = []; // team avg diffs
+  const oobCounts = []; // not critical here, placeholder to keep UI happy
 
+  for (const r of sessionRounds) {
+    const ms = r.meta?.buildMs;
+    if (typeof ms === 'number') buildTimes.push(ms);
+    usedCourts.push(r.matches.length);
+    for (const m of r.matches) {
+      diffs.push(Math.abs((m.team1Avg || 0) - (m.team2Avg || 0)));
+    }
+    oobCounts.push(0); // we can compute band-expansion counts if needed later
+  }
   return { buildTimes, usedCourts, diffs, oobCounts };
+}
+
+export function countBackToBackBenches(playerId, sessionRounds) {
+  let best = 0;
+  let cur = 0;
+  for (const r of sessionRounds) {
+    const on = r.matches.some(
+      (m) =>
+        m.team1.some((p) => p.id === playerId) ||
+        m.team2.some((p) => p.id === playerId)
+    );
+    if (on) cur = 0;
+    else cur++;
+    if (cur > best) best = cur;
+  }
+  return best;
+}
+
+export function perPlayerUniq(playerId, sessionRounds) {
+  const teamSet = new Set();
+  const oppSet = new Set();
+  for (const r of sessionRounds) {
+    for (const m of r.matches) {
+      const onT1 = m.team1.some((p) => p.id === playerId);
+      const onT2 = m.team2.some((p) => p.id === playerId);
+      if (!onT1 && !onT2) continue;
+      const myTeam = onT1 ? m.team1 : m.team2;
+      const oppTeam = onT1 ? m.team2 : m.team1;
+      for (const p of myTeam) if (p.id !== playerId) teamSet.add(p.id);
+      for (const p of oppTeam) oppSet.add(p.id);
+    }
+  }
+  return { uniqTeammates: teamSet.size, uniqOpponents: oppSet.size };
 }
