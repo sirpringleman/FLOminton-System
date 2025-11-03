@@ -21,7 +21,7 @@ If you are developing a production application, we recommend using TypeScript wi
 LEFT TO DO:
 - UI Improvements                                                                                           - DONE
 - Function to swap out player on a court with someone sitting out easily
-- Function to block / reduce available courts
+- Function to block / reduce available courts                                                               - DONE
 - Sound Check
 - Logic fix - DONE (live testing required)
 - Function to have 2 at least, but preferably multiple, separate player databases that can be switched
