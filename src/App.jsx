@@ -9,9 +9,7 @@ import {
   formatTime,
 } from './logic';
 
-/* -------------------------------------------------
-   Reusable UI bits
---------------------------------------------------*/
+/* ============ UI helpers ============ */
 const Button = ({ children, onClick, kind='ghost', disabled, title, className }) => (
   <button
     title={title}
@@ -27,14 +25,11 @@ const Chip = ({ children, gender }) => (
   <span className={`chip ${gender === 'F' ? 'chip-f' : 'chip-m'}`}>{children}</span>
 );
 
-/* -------------------------------------------------
-   Settings dialog (sticky until Save/Close)
---------------------------------------------------*/
+/* ============ Settings dialog (sticky until Save/Close) ============ */
 function SettingsDialog({ open, initial, onSave, onClose, matchMode, setMatchMode }) {
   const [form, setForm] = useState(initial);
   useEffect(() => { if (open) setForm(initial); }, [open, initial]);
   if (!open) return null;
-
   const update = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
   return (
@@ -103,9 +98,7 @@ function SettingsDialog({ open, initial, onSave, onClose, matchMode, setMatchMod
   );
 }
 
-/* -------------------------------------------------
-   Court card
---------------------------------------------------*/
+/* ============ Court card ============ */
 const Court = ({ court, match, showAverages }) => {
   const { team1, team2, avg1, avg2 } = match;
   return (
@@ -138,9 +131,7 @@ const Court = ({ court, match, showAverages }) => {
   );
 };
 
-/* -------------------------------------------------
-   Full-screen Display view (big names)
---------------------------------------------------*/
+/* ============ Full-screen Display ============ */
 function DisplayView({
   round, secondsLeft, warnSeconds, blink,
   matches, benched, presentCount
@@ -187,27 +178,21 @@ function DisplayView({
   );
 }
 
-/* -------------------------------------------------
-   Smart Summary + Diagnostics modal
-   (unlocked diagnostics when Admin is ON)
---------------------------------------------------*/
+/* ============ Summary / Diagnostics (unchanged) ============ */
 function SummaryModal({ open, onClose, isAdmin, history, playersSnapshot }) {
-  const [tab, setTab] = useState('summary'); // summary | diagnostics
-
+  const [tab, setTab] = useState('summary');
   if (!open) return null;
 
-  // Compute light metrics from history
   const rounds = history.length;
   const participants = new Set();
   const benchesByPlayer = new Map();
   const playedByPlayer = new Map();
-  const teammatePairs = new Map(); // 'idA-idB' => count
+  const teammatePairs = new Map();
   const opponentPairs = new Map();
 
   for (const h of history) {
     h.matches.forEach(m => {
       [...m.team1, ...m.team2].forEach(p => { participants.add(p.id); });
-      // team mates
       const t1 = m.team1.map(p=>p.id);
       const t2 = m.team2.map(p=>p.id);
       for (let i=0;i<t1.length;i++) for (let j=i+1;j<t1.length;j++){
@@ -216,14 +201,11 @@ function SummaryModal({ open, onClose, isAdmin, history, playersSnapshot }) {
       for (let i=0;i<t2.length;i++) for (let j=i+1;j<t2.length;j++){
         const k = [t2[i],t2[j]].sort().join('-'); teammatePairs.set(k,(teammatePairs.get(k)||0)+1);
       }
-      // opponents
       t1.forEach(a => t2.forEach(b => {
         const k = [a,b].sort().join('-'); opponentPairs.set(k,(opponentPairs.get(k)||0)+1);
       }));
-      // played counts
       [...t1, ...t2].forEach(id => playedByPlayer.set(id, (playedByPlayer.get(id)||0)+1));
     });
-
     h.benchedIds.forEach(id => benchesByPlayer.set(id, (benchesByPlayer.get(id)||0)+1));
   }
 
@@ -241,7 +223,7 @@ function SummaryModal({ open, onClose, isAdmin, history, playersSnapshot }) {
       if (b===id) s.add(a);
     });
     return s.size;
-    };
+  };
   const uniqueOpponentsCount = (id) => {
     const s = new Set();
     opponentPairs.forEach((v,k) => {
@@ -303,8 +285,7 @@ function SummaryModal({ open, onClose, isAdmin, history, playersSnapshot }) {
         {tab === 'diagnostics' && isAdmin && (
           <div>
             <h4>System Diagnostics</h4>
-            <div className="muted">Rounds logged: {history.length}. Match objects total: {history.reduce((s,h)=>s+h.matches.length,0)}</div>
-            <div className="muted">Teammate pairs tracked: {teammatePairs.size}. Opponent pairs tracked: {opponentPairs.size}.</div>
+            <div className="muted">Rounds logged: {history.length}.</div>
           </div>
         )}
       </div>
@@ -312,34 +293,27 @@ function SummaryModal({ open, onClose, isAdmin, history, playersSnapshot }) {
   );
 }
 
-/* -------------------------------------------------
-   Main App (deluxe)
---------------------------------------------------*/
+/* ============ Main App ============ */
 export default function App() {
   const API = '/.netlify/functions/players';
 
-  // Data
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Session state
   const [round, setRound] = useState(1);
   const [courts, setCourts] = useState(4);
   const [matches, setMatches] = useState([]);
   const [benched, setBenched] = useState([]);
 
-  // Timer
   const [secondsLeft, setSecondsLeft] = useState(12*60);
   const [running, setRunning] = useState(false);
   const [blink, setBlink] = useState(false);
 
-  // Admin/UI
   const [isAdmin, setIsAdmin] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
 
-  // Settings
   const [settings, setSettings] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('flo.settings') || '{}');
@@ -352,17 +326,12 @@ export default function App() {
     } catch { return { roundMinutes: 12, warnSeconds: 30, autoAdvance: true, autoRebuild: true }; }
   });
 
-  // Mode
   const [matchMode, setMatchModeState] = useState(getMatchMode());
   const setMatchMode = (m) => { setMatchModeState(m); persistMatchMode(m); };
 
-  // Fairness helper
   const lastRoundBenched = useRef(new Set());
+  const [history, setHistory] = useState([]);
 
-  // Simple round history for summary/diagnostics
-  const [history, setHistory] = useState([]); // [{round, matches, benchedIds}]
-
-  // Audio
   const audioCtxRef = useRef(null);
   const beep = useRef(()=>{});
   useEffect(() => {
@@ -379,7 +348,6 @@ export default function App() {
     };
   }, []);
 
-  /* ---------- Load players ---------- */
   const fetchPlayers = async () => {
     setLoading(true);
     try {
@@ -402,7 +370,6 @@ export default function App() {
 
   const present = useMemo(() => players.filter(p => p.is_present), [players]);
 
-  /* ---------- Timer ---------- */
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => {
@@ -412,7 +379,6 @@ export default function App() {
           setRunning(false);
           setBlink(true);
           beep.current(1000, 220); setTimeout(()=>beep.current(700, 220), 260); setTimeout(()=>beep.current(500, 320), 560);
-
           if (settings.autoAdvance) setTimeout(() => nextRound(true), 800);
           return 0;
         }
@@ -423,18 +389,14 @@ export default function App() {
     return () => clearInterval(id);
   }, [running, settings.autoAdvance, settings.warnSeconds]);
 
-  /* ---------- Build a round ---------- */
   const buildRound = () => {
     const { playing, benched: justBenched } =
       selectPlayersForRound(present, round, lastRoundBenched.current, courts);
-
     lastRoundBenched.current = new Set(justBenched.map(p => p.id));
-
     const built = buildMatchesFrom16(playing, undefined, courts);
     setMatches(built);
     setBenched(justBenched);
 
-    // Local counters and snapshot for history
     const byIdPlaying = new Set(playing.map(p=>p.id));
     setPlayers(prev => prev.map(p => {
       if (byIdPlaying.has(p.id)) return { ...p, last_played_round: round };
@@ -442,7 +404,6 @@ export default function App() {
       return p;
     }));
 
-    // Append to history
     setHistory(prev => prev.concat([{
       round,
       matches: built.map(m => ({
@@ -454,13 +415,11 @@ export default function App() {
     }]));
   };
 
-  /* ---------- Controls ---------- */
   const startNight = () => {
     setRound(1);
     setSecondsLeft(settings.roundMinutes * 60);
     setBlink(false);
     setHistory([]);
-    // reset bench counters & last_played_round
     setPlayers(prev => prev.map(p => ({ ...p, bench_count: 0, last_played_round: 0 })));
     setTimeout(() => { buildRound(); setRunning(true); }, 60);
   };
@@ -479,16 +438,13 @@ export default function App() {
   const endNight = () => {
     setRunning(false);
     setBlink(false);
-    // show summary; keep history + players snapshot
     setSummaryOpen(true);
   };
 
-  /* ---------- Toggling present (double-click) ---------- */
   const togglePresent = (p) => {
     setPlayers(prev => prev.map(x => x.id === p.id ? { ...x, is_present: !x.is_present } : x));
   };
 
-  /* ---------- Save All to backend ---------- */
   const [saving, setSaving] = useState(false);
   const saveAll = async () => {
     setSaving(true);
@@ -504,7 +460,9 @@ export default function App() {
           }
         }))
       };
-      const res = await fetch(API, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      const res = await fetch('/.netlify/functions/players', {
+        method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+      });
       if (!res.ok) {
         const txt = await res.text();
         throw new Error('Failed to save round updates: ' + txt.slice(0,300));
@@ -514,43 +472,46 @@ export default function App() {
     } finally { setSaving(false); }
   };
 
-  /* ---------- Computed ---------- */
   const timerClass = useMemo(() => {
     if (secondsLeft === 0) return blink ? 'timer blink' : 'timer';
     if (secondsLeft <= settings.warnSeconds) return 'timer warn';
     return 'timer';
   }, [secondsLeft, settings.warnSeconds, blink]);
 
-  /* ---------- Render ---------- */
   return (
     <div className="page">
       {/* Toolbar */}
       <div className="toolbar">
-        <Button kind="primary" onClick={startNight}>Start Night</Button>
-        <Button onClick={pause}>Pause</Button>
-        <Button onClick={resume}>Resume</Button>
-        <Button onClick={() => nextRound(false)}>Next Round</Button>
-        <Button kind="danger" onClick={endNight}>End Night</Button>
-
-        <div className="spacer" />
-        <div className="app-title">🏸 TheFLOminton System</div>
-        <div className={timerClass}>Round {round} · {formatTime(secondsLeft)}</div>
-        <div className="spacer" />
-
-        <Button onClick={()=>setDisplayOpen(true)}>Open Display</Button>
-
-        {isAdmin && (
+        <div className="toolbar-left">
+          <div className="app-title-left">🏸 TheFLOminton System</div>
           <div className="hrow" style={{gap:8}}>
-            <label className="muted">Mode:</label>
-            <select className="input sm" value={matchMode} onChange={e => setMatchMode(e.target.value)}>
-              <option value={MATCH_MODES.BAND}>Band</option>
-              <option value={MATCH_MODES.WINDOW}>Window</option>
-            </select>
+            <Button kind="primary" onClick={startNight}>Start Night</Button>
+            <Button onClick={pause}>Pause</Button>
+            <Button onClick={resume}>Resume</Button>
+            <Button onClick={() => nextRound(false)}>Next Round</Button>
+            <Button kind="danger" onClick={endNight}>End Night</Button>
           </div>
-        )}
+        </div>
 
-        <Button onClick={() => setSettingsOpen(true)}>Settings</Button>
-        <Button onClick={() => setIsAdmin(a=>!a)}>{isAdmin ? 'Admin ON' : 'Admin'}</Button>
+        <div className="toolbar-center">
+          <div className="round-pill">Round {round}</div>
+          <div className={timerClass}>{formatTime(secondsLeft)}</div>
+        </div>
+
+        <div className="toolbar-right">
+          <Button onClick={()=>setDisplayOpen(true)}>Open Display</Button>
+          {isAdmin && (
+            <div className="hrow" style={{gap:8}}>
+              <label className="muted">Mode:</label>
+              <select className="input sm" value={matchMode} onChange={e => setMatchMode(e.target.value)}>
+                <option value={MATCH_MODES.BAND}>Band</option>
+                <option value={MATCH_MODES.WINDOW}>Window</option>
+              </select>
+            </div>
+          )}
+          <Button onClick={() => setSettingsOpen(true)}>Settings</Button>
+          <Button onClick={() => setIsAdmin(a=>!a)}>{isAdmin ? 'Admin ON' : 'Admin'}</Button>
+        </div>
       </div>
 
       {/* Courts */}
@@ -646,7 +607,7 @@ export default function App() {
         setMatchMode={setMatchMode}
       />
 
-      {/* Display (overlay page) */}
+      {/* Display overlay */}
       {displayOpen && (
         <div className="display-overlay">
           <div className="display-close">
@@ -664,7 +625,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Smart Summary / Diagnostics */}
+      {/* Summary */}
       <SummaryModal
         open={summaryOpen}
         onClose={()=>setSummaryOpen(false)}

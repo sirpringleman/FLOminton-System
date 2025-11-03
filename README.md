@@ -19,17 +19,18 @@ If you are developing a production application, we recommend using TypeScript wi
 ---------------------------------------------------------------------------------------------------------------------
 
 LEFT TO DO:
-- UI Improvements
+- UI Improvements                                                                                           - DONE
 - Function to swap out player on a court with someone sitting out easily
 - Function to block / reduce available courts
 - Sound Check
 - Logic fix - DONE (live testing required)
-- Function to have 2 at least, but preferably multiple, separate player databases that can be switched between when in admin mode, to accommodate more clubs (or at least 2)
+- Function to have 2 at least, but preferably multiple, separate player databases that can be switched
+  between when in admin mode, to accommodate more clubs (or at least 2)
 - Small bug / UI fixes
-    - round # not increasing each time round ends - DONE
-    - when admin mode is not enabled, 'Admin Controls' should be hidden from view on the Player List page
-    - hide player skill level when admin mode is not enabled
+    - round # not increasing each time round ends                                                           - DONE
+    - when admin mode is not enabled, 'Admin Controls' should be hidden from view on the Player List page   - DONE
+    - hide player skill level when admin mode is not enabled                                                - DONE
     - better name for 'Start Night' and/or 'Resume' considering how they function now
-    - when timer reaches 00:00 let the time blink red / white
+    - when timer reaches 00:00 let the time blink red / white                                               - DONE
 - Testing
 
