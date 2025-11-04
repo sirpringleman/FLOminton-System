@@ -66,14 +66,6 @@ const by = (fn) => (a, b) => {
   if (x > y) return 1;
   return 0;
 };
-const shuffle = (arr) => {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-};
 function chunk(arr, n) {
   const out = [];
   for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
@@ -115,7 +107,7 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
     return Math.random() - 0.5;
   });
 
-  // compute average bench to detect lagging players
+  // average bench to detect lagging players
   const benchCounts = present.map(p => p.bench_count || 0);
   const avgBench = benchCounts.reduce((s, x) => s + x, 0) / benchCounts.length;
 
@@ -186,8 +178,19 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
   } else {
     groups = makeGroupsWindow(sorted, totalCourts);
   }
+
+  // ❗ FIX: if grouping couldn’t make all courts, fall back to a chunk that
+  // puts _mustPlay players first, so debt players actually get a court.
   if (groups.length !== totalCourts) {
-    groups = chunk(sorted, 4).slice(0, totalCourts);
+    const prioritized = players
+      .slice()
+      .sort((a, b) => {
+        const am = a._mustPlay ? -1 : 0;
+        const bm = b._mustPlay ? -1 : 0;
+        if (am !== bm) return am - bm;    // mustPlay first
+        return a.skill_level - b.skill_level; // then skill
+      });
+    groups = chunk(prioritized, 4).slice(0, totalCourts);
   }
 
   const matches = [];
@@ -239,7 +242,7 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
     // forward
     for (let j = i + 1; j < sortedPlayers.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue; // ← prevent duplicates
+      if (pickIdx.includes(j)) continue;
       const candidate = sortedPlayers[j];
       const s = candidate.skill_level;
       const allowExtra = root._mustPlay || candidate._mustPlay;
@@ -252,7 +255,7 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
     // backward
     for (let j = sortedPlayers.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue; // ← prevent duplicates
+      if (pickIdx.includes(j)) continue;
       const candidate = sortedPlayers[j];
       const s = candidate.skill_level;
       const allowExtra = root._mustPlay || candidate._mustPlay;
@@ -296,7 +299,7 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
     // forward
     for (let j = i + 1; j < playersWithBand.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue; // ← prevent duplicates
+      if (pickIdx.includes(j)) continue;
       const candidate = playersWithBand[j];
       const bj = candidate._band;
       const allowExtra = root._mustPlay || candidate._mustPlay;
@@ -309,7 +312,7 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
     // backward
     for (let j = playersWithBand.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue; // ← prevent duplicates
+      if (pickIdx.includes(j)) continue;
       const candidate = playersWithBand[j];
       const bj = candidate._band;
       const allowExtra = root._mustPlay || candidate._mustPlay;
