@@ -127,8 +127,10 @@ export default function App() {
   const [matches, setMatches] = useState([]);
   const [benched, setBenched] = useState([]);
 
+  // view: 'home' | 'session' | 'display'
   const [view, setView] = useState(() => getInitialView());
 
+  // phase: 'stopped' | 'round' | 'transition'
   const [phase, setPhase] = useState('stopped');
   const [running, setRunning] = useState(false);
 
@@ -159,7 +161,14 @@ export default function App() {
     outOfBandCounts: [],
   });
 
+  // live session metrics
   const [sessionStats, setSessionStats] = useState(() => new Map());
+
+  // snapshots for the summary modal (so we don't show 0 after reset)
+  const [sessionSnapshot, setSessionSnapshot] = useState(null);
+  const [diagSnapshot, setDiagSnapshot] = useState(null);
+  const [playersSnapshot, setPlayersSnapshot] = useState(null);
+  const [roundSnapshot, setRoundSnapshot] = useState(0);
 
   const teammateHistory = useRef(new Map());
   const lastRoundBenched = useRef(new Set());
@@ -167,6 +176,7 @@ export default function App() {
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
   const { beep } = useBeep(volumeRef);
 
+  /* ---------- load players on mount ---------- */
   useEffect(() => {
     (async () => {
       try {
@@ -183,9 +193,11 @@ export default function App() {
     })();
   }, [view]);
 
+  /* ---------- derived lists ---------- */
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
 
+  /* ---------- presence toggle ---------- */
   async function togglePresent(p) {
     const nv = !p.is_present;
     setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
@@ -197,6 +209,9 @@ export default function App() {
     }
   }
 
+  /* =========================================================
+     TIMER / PHASE LOGIC
+     ========================================================= */
   const isWarn = phase === 'round' && running && timerLeft <= warnSeconds;
 
   function clearTick() {
@@ -255,6 +270,9 @@ export default function App() {
     setRunning(false);
   }
 
+  /* =========================================================
+     ROUND BUILD + PERSISTENCE
+     ========================================================= */
   async function buildNextRound(nextRound) {
     if (present.length < 4) {
       alert('Not enough players present.');
@@ -285,6 +303,7 @@ export default function App() {
       outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
     }));
 
+    // session per-player stats
     setSessionStats((prev) => {
       const next = new Map(prev);
       playing.forEach((p) => {
@@ -357,6 +376,9 @@ export default function App() {
     await buildNextRound(next);
   }
 
+  /* =========================================================
+     UI ACTIONS
+     ========================================================= */
   function onBeginNight() {
     setView('session');
   }
@@ -387,7 +409,19 @@ export default function App() {
   }
 
   async function onEndNight() {
+    // build snapshots BEFORE wiping
+    const summarySnap = buildSmartSummaryFrom(
+      sessionStats,
+      players,
+      roundRef.current
+    );
+    const diagSnap = { ...diag };
+    setSessionSnapshot(summarySnap);
+    setDiagSnapshot(diagSnap);
+    setPlayersSnapshot(players.slice());
     setShowRundown(true);
+
+    // reset everything
     const resetPlayers = players.map((p) => ({
       ...p,
       is_present: false,
@@ -472,6 +506,9 @@ export default function App() {
     alert('Admin mode disabled');
   }
 
+  /* =========================================================
+     ADMIN PANEL
+     ========================================================= */
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerGender, setNewPlayerGender] = useState('M');
   const [newPlayerLevel, setNewPlayerLevel] = useState(5);
@@ -541,6 +578,9 @@ export default function App() {
     );
   }
 
+  /* =========================================================
+     DIAGNOSTICS + SUMMARY HELPERS
+     ========================================================= */
   function computeDiagnostics(roundMatches) {
     const used = roundMatches.length;
     const imbalances = roundMatches.map((m) => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
@@ -564,6 +604,74 @@ export default function App() {
     return { used, avgImbalance, avgSpan, outOfBand };
   }
 
+  // this is the same summary builder as before, but now extracted so we can call it in onEndNight
+  function buildSmartSummaryFrom(statMap, playersList, roundNum) {
+    const per = Array.from(statMap.values()).map((p) => {
+      const gaps = p.benchGap.length ? p.benchGap : [0];
+      const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+      return {
+        id: p.id,
+        name: p.name,
+        level: p.level,
+        played: p.played,
+        benched: p.benched,
+        avgBenchGap: avgGap,
+        worstBenchStreak: p.worstBenchStreak,
+        teammates: p.teammates.size,
+        opponents: p.opponents.size,
+      };
+    });
+    const plays = per.map((p) => p.played);
+    const mean = plays.length ? plays.reduce((a, b) => a + b, 0) / plays.length : 0;
+    const variance =
+      plays.length > 1
+        ? plays.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / (plays.length - 1)
+        : 0;
+    const stdDev = Math.sqrt(variance);
+    const spread = plays.length ? Math.max(...plays) - Math.min(...plays) : 0;
+    const fairnessRatio = mean ? stdDev / mean : 0;
+
+    return {
+      rounds: roundNum,
+      participantsCount: playersList.length,
+      males: playersList.filter((p) => p.gender !== 'F').length,
+      females: playersList.filter((p) => p.gender === 'F').length,
+      per,
+      meanPlays: mean,
+      stdDev,
+      spread,
+      fairnessRatio,
+      copyText: `FLOminton Summary\nRounds: ${roundNum}\nParticipants: ${
+        playersList.length
+      }\nFairness: mean=${mean.toFixed(2)} stdev=${stdDev.toFixed(2)} spread=${spread}`,
+      csvRows: [
+        [
+          'name',
+          'level',
+          'played',
+          'benched',
+          'avg_bench_gap',
+          'worst_bench_streak',
+          'unique_teammates',
+          'unique_opponents',
+        ],
+        ...per.map((p) => [
+          p.name,
+          p.level,
+          p.played,
+          p.benched,
+          p.avgBenchGap.toFixed(2),
+          p.worstBenchStreak,
+          p.teammates,
+          p.opponents,
+        ]),
+      ],
+    };
+  }
+
+  /* =========================================================
+     RENDER HELPERS
+     ========================================================= */
   function Court({ m, large = false, showLevels, showAverages }) {
     const Tag = (pl) => (
       <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
@@ -715,70 +823,6 @@ export default function App() {
     );
   }
 
-  function buildSmartSummary() {
-    const per = Array.from(sessionStats.values()).map((p) => {
-      const gaps = p.benchGap.length ? p.benchGap : [0];
-      const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-      return {
-        id: p.id,
-        name: p.name,
-        level: p.level,
-        played: p.played,
-        benched: p.benched,
-        avgBenchGap: avgGap,
-        worstBenchStreak: p.worstBenchStreak,
-        teammates: p.teammates.size,
-        opponents: p.opponents.size,
-      };
-    });
-    const plays = per.map((p) => p.played);
-    const mean = plays.length ? plays.reduce((a, b) => a + b, 0) / plays.length : 0;
-    const variance =
-      plays.length > 1
-        ? plays.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / (plays.length - 1)
-        : 0;
-    const stdDev = Math.sqrt(variance);
-    const spread = plays.length ? Math.max(...plays) - Math.min(...plays) : 0;
-    const fairnessRatio = mean ? stdDev / mean : 0;
-
-    return {
-      rounds: roundRef.current,
-      participantsCount: players.length,
-      males: players.filter((p) => p.gender !== 'F').length,
-      females: players.filter((p) => p.gender === 'F').length,
-      per,
-      meanPlays: mean,
-      stdDev,
-      spread,
-      fairnessRatio,
-      copyText: `FLOminton Summary\nRounds: ${roundRef.current}\nParticipants: ${
-        players.length
-      }\nFairness: mean=${mean.toFixed(2)} stdev=${stdDev.toFixed(2)} spread=${spread}`,
-      csvRows: [
-        [
-          'name',
-          'level',
-          'played',
-          'benched',
-          'avg_bench_gap',
-          'worst_bench_streak',
-          'unique_teammates',
-          'unique_opponents',
-        ],
-        ...per.map((p) => [
-          p.name,
-          p.level,
-          p.played,
-          p.benched,
-          p.avgBenchGap.toFixed(2),
-          p.worstBenchStreak,
-          p.teammates,
-          p.opponents,
-        ]),
-      ],
-    };
-  }
-
   function downloadCSV(rows) {
     const csv = rows.map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -793,7 +837,11 @@ export default function App() {
   }
 
   function RundownModal() {
-    const S = buildSmartSummary();
+    // prefer snapshot if available
+    const S =
+      sessionSnapshot ||
+      buildSmartSummaryFrom(sessionStats, playersSnapshot || players, roundSnapshot || roundRef.current);
+    const D = diagSnapshot || diag;
     const [tab, setTab] = useState('summary');
     return (
       <div className="modal-backdrop">
@@ -886,14 +934,14 @@ export default function App() {
               <div className="two-col">
                 <div>
                   <h4>Round Build Performance</h4>
-                  <div>Build times (ms): {(diag.roundBuildTimes || []).join(', ') || '-'}</div>
-                  <div>Courts used per round: {(diag.usedCourts || []).join(', ') || '-'}</div>
+                  <div>Build times (ms): {(D.roundBuildTimes || []).join(', ') || '-'}</div>
+                  <div>Courts used per round: {(D.usedCourts || []).join(', ') || '-'}</div>
                 </div>
                 <div>
                   <h4>Match Quality</h4>
-                  <div>Avg team imbalance / round: {(diag.teamImbalances || []).join(', ') || '-'}</div>
-                  <div>Avg skill span / match (round avg): {(diag.spanPerMatch || []).join(', ') || '-'}</div>
-                  <div>Out-of-band (±2 from median): {(diag.outOfBandCounts || []).join(', ') || '-'}</div>
+                  <div>Avg team imbalance / round: {(D.teamImbalances || []).join(', ') || '-'}</div>
+                  <div>Avg skill span / match (round avg): {(D.spanPerMatch || []).join(', ') || '-'}</div>
+                  <div>Out-of-band (±2 from median): {(D.outOfBandCounts || []).join(', ') || '-'}</div>
                 </div>
               </div>
 
@@ -998,6 +1046,7 @@ export default function App() {
     );
   }
 
+  /* ---------- VIEW SWITCH ---------- */
   if (loading) {
     return (
       <div className="page centered">
@@ -1240,6 +1289,7 @@ export default function App() {
   );
 }
 
+/* ================= Utilities ================= */
 function getInitialView() {
   const url = new URL(window.location.href);
   return url.searchParams.get('display') === '1' ? 'display' : 'home';
