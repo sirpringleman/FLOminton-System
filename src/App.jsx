@@ -140,7 +140,7 @@ export default function App() {
   const [transitionSeconds, setTransitionSeconds] = useState(
     LS.getNum('flo.transition.seconds', 30, 5, 120)
   );
-  // default to 4 courts (and persist)
+  // default to 4 courts
   const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 12));
 
   const [timerLeft, setTimerLeft] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
@@ -612,8 +612,8 @@ export default function App() {
           )}
         </div>
         <div className="team-row">{m.team1.map(Tag)}</div>
-        {/* court divider */}
-        <div className="slot-bar court-divider" />
+        {/* court divider (restored) */}
+        <div className="slot-bar court-divider" style={{ borderTop: '2px dashed rgba(255,255,255,0.35)' }} />
         <div className="team-row">{m.team2.map(Tag)}</div>
       </div>
     );
