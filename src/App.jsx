@@ -127,10 +127,8 @@ export default function App() {
   const [matches, setMatches] = useState([]);
   const [benched, setBenched] = useState([]);
 
-  // view: 'home' | 'session' | 'display'
   const [view, setView] = useState(() => getInitialView());
 
-  // phase: 'stopped' | 'round' | 'transition'
   const [phase, setPhase] = useState('stopped');
   const [running, setRunning] = useState(false);
 
@@ -169,7 +167,6 @@ export default function App() {
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
   const { beep } = useBeep(volumeRef);
 
-  /* ---------- load players on mount ---------- */
   useEffect(() => {
     (async () => {
       try {
@@ -186,11 +183,9 @@ export default function App() {
     })();
   }, [view]);
 
-  /* ---------- derived lists ---------- */
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
 
-  /* ---------- presence toggle ---------- */
   async function togglePresent(p) {
     const nv = !p.is_present;
     setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
@@ -202,9 +197,6 @@ export default function App() {
     }
   }
 
-  /* =========================================================
-     TIMER / PHASE LOGIC
-     ========================================================= */
   const isWarn = phase === 'round' && running && timerLeft <= warnSeconds;
 
   function clearTick() {
@@ -263,9 +255,6 @@ export default function App() {
     setRunning(false);
   }
 
-  /* =========================================================
-     ROUND BUILD + PERSISTENCE
-     ========================================================= */
   async function buildNextRound(nextRound) {
     if (present.length < 4) {
       alert('Not enough players present.');
@@ -368,9 +357,6 @@ export default function App() {
     await buildNextRound(next);
   }
 
-  /* =========================================================
-     UI ACTIONS
-     ========================================================= */
   function onBeginNight() {
     setView('session');
   }
@@ -486,9 +472,6 @@ export default function App() {
     alert('Admin mode disabled');
   }
 
-  /* =========================================================
-     ADMIN PANEL
-     ========================================================= */
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerGender, setNewPlayerGender] = useState('M');
   const [newPlayerLevel, setNewPlayerLevel] = useState(5);
@@ -558,9 +541,6 @@ export default function App() {
     );
   }
 
-  /* =========================================================
-     DIAGNOSTICS + SUMMARY HELPERS
-     ========================================================= */
   function computeDiagnostics(roundMatches) {
     const used = roundMatches.length;
     const imbalances = roundMatches.map((m) => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
@@ -584,9 +564,6 @@ export default function App() {
     return { used, avgImbalance, avgSpan, outOfBand };
   }
 
-  /* =========================================================
-     RENDER HELPERS
-     ========================================================= */
   function Court({ m, large = false, showLevels, showAverages }) {
     const Tag = (pl) => (
       <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
@@ -609,9 +586,13 @@ export default function App() {
             </div>
           )}
         </div>
-        <div className="court-body-vertical">
-          <div className="team-row-inline">{m.team1.map(Tag)}</div>
-          {/* badminton net – horizontal, thicker, with light mesh */}
+        <div className="court-body-vertical" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div
+            className="team-row-inline"
+            style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {m.team1.map(Tag)}
+          </div>
           <div
             className="court-net-horizontal"
             style={{
@@ -625,7 +606,12 @@ export default function App() {
               margin: '4px 0 6px',
             }}
           />
-          <div className="team-row-inline">{m.team2.map(Tag)}</div>
+          <div
+            className="team-row-inline"
+            style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {m.team2.map(Tag)}
+          </div>
         </div>
       </div>
     );
@@ -1012,7 +998,6 @@ export default function App() {
     );
   }
 
-  /* ---------- VIEW SWITCH ---------- */
   if (loading) {
     return (
       <div className="page centered">
@@ -1255,7 +1240,6 @@ export default function App() {
   );
 }
 
-/* ================= Utilities ================= */
 function getInitialView() {
   const url = new URL(window.location.href);
   return url.searchParams.get('display') === '1' ? 'display' : 'home';
