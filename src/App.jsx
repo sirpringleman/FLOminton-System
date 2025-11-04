@@ -612,8 +612,11 @@ export default function App() {
           )}
         </div>
         <div className="team-row">{m.team1.map(Tag)}</div>
-        {/* court divider (restored) */}
-        <div className="slot-bar court-divider" style={{ borderTop: '2px dashed rgba(255,255,255,0.35)' }} />
+        {/* court divider (thicker) */}
+        <div
+          className="slot-bar court-divider"
+          style={{ borderTop: '4px solid rgba(255,255,255,0.4)', margin: '8px 0' }}
+        />
         <div className="team-row">{m.team2.map(Tag)}</div>
       </div>
     );
