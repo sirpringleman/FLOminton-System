@@ -8,14 +8,15 @@
    Team split in BOTH modes:
    - Balanced pairing: weak+high vs weak+high (p1,p4) vs (p2,p3)
 
-   Fairness (both modes):
-   - Select players by highest bench_count, then oldest last_played_round, then random
-   - Hard guard: no one benches twice before everyone benches once
-   - Avoid consecutive benches where possible
+   Fairness (tiered):
+   Tier 1 (always): sort by bench_count, then last_played_round, add small debt for “benched last round”
+   Tier 2 (conditional): players whose bench_count is noticeably above session avg are forced into PLAY for this round
+   Tier 3 (gentle): grouping functions allow a +1 window/band for those forced players so they can actually be placed
 */
 
-/* ========================= Tunables ========================= */
 export const MATCH_MODES = { WINDOW: 'window', BAND: 'band' };
+
+/* ========================= Tunables ========================= */
 
 // Window mode settings
 const START_SKILL_WINDOW = 2;      // max-min ≤ this to start; expand if needed
@@ -35,8 +36,10 @@ const MAX_BAND_EXPANSION = 4;      // allow beyond ±1 only if courts would fail
 const REMATCH_MEMORY  = 4;
 const REMATCH_PENALTY = 1;
 
-// Fairness guard
+// Fairness guards
 const MAX_CONSECUTIVE_BENCH = 1;
+// how far above the average bench_count a player has to be before we “force” them in
+const FAIRNESS_LAG_TOLERANCE = 1;
 
 /* ========================= Mode storage ========================= */
 let currentMode = safeGetLocal('match_mode') || MATCH_MODES.WINDOW;
@@ -81,6 +84,8 @@ function chunk(arr, n) {
 
 /**
  * Select 4*courts players with fairness hard-guards.
+ * Tiered fairness is applied here.
+ *
  * @param {Array} present - [{id, name, skill_level, is_present, bench_count, last_played_round}]
  * @param {number} roundNumber
  * @param {Set<string>} lastRoundBenched
@@ -88,70 +93,91 @@ function chunk(arr, n) {
  * @returns {{playing: Array, benched: Array}}
  */
 export function selectPlayersForRound(present, roundNumber, lastRoundBenched = new Set(), courtsCount = 4) {
-  const NEED = Math.min(present.length - (present.length % 4), courtsCount * 4);
-  if (present.length < 4) return { playing: [], benched: present.slice() };
+  const total = present.length;
+  if (total < 4) return { playing: [], benched: present.slice() };
+
+  // maximum we can actually fit on courts
+  const maxSlots = courtsCount * 4;
+  const NEED = Math.min(total - (total % 4), maxSlots);
   if (NEED <= 0) return { playing: [], benched: present.slice() };
 
-  // Fairness priority: higher bench_count first; then older last_played_round; tie random
+  // ---- Tier 1: base fairness ordering ----
+  // small “bench debt” if you were benched last round
   const ranked = present.slice().sort((a, b) => {
-    const t =
-      (b.bench_count || 0) - (a.bench_count || 0) ||
-      (a.last_played_round || 0) - (b.last_played_round || 0);
-    if (t !== 0) return t;
+    const benchA = a.bench_count || 0;
+    const benchB = b.bench_count || 0;
+    const debtA  = lastRoundBenched?.has(a.id) ? 0.5 : 0;
+    const debtB  = lastRoundBenched?.has(b.id) ? 0.5 : 0;
+    const scoreA = benchA + debtA;
+    const scoreB = benchB + debtB;
+    if (scoreA !== scoreB) return scoreA - scoreB;
+    // older last_played_round should come earlier
+    const lpa = a.last_played_round || 0;
+    const lpb = b.last_played_round || 0;
+    if (lpa !== lpb) return lpa - lpb;
     return Math.random() - 0.5;
   });
 
-  // Hard guard: nobody benches twice before all bench once
-  const minBench = Math.min(...present.map(p => p.bench_count || 0));
-  const benchEligible = new Set(
-    present.filter(p => (p.bench_count || 0) > minBench).map(p => p.id)
+  // compute average bench to detect lagging players
+  const benchCounts = present.map(p => p.bench_count || 0);
+  const avgBench = benchCounts.reduce((s, x) => s + x, 0) / benchCounts.length;
+
+  // ---- Tier 2: force-in players who are clearly behind ----
+  // lagging = those more than avg + tolerance
+  const laggingIds = new Set(
+    present
+      .filter(p => (p.bench_count || 0) > avgBench + FAIRNESS_LAG_TOLERANCE)
+      .map(p => p.id)
   );
-  const avoidConsecutive = new Set(lastRoundBenched || []);
 
-  const toBenchCount = Math.max(0, present.length - NEED);
-  if (toBenchCount === 0) return { playing: ranked.slice(0, NEED), benched: [] };
-
-  // Build bench from the bottom of priority while respecting eligibility/avoid-consecutive
-  const reversed = ranked.slice().reverse();
-  const bench = [];
-
-  const tryBench = (pred) => {
-    for (const p of reversed) {
-      if (bench.length >= toBenchCount) break;
-      if (bench.find(x => x.id === p.id)) continue;
-      if (pred(p)) bench.push(p);
+  // build playing list: first all lagging (in their fairness order), then fill with the rest
+  const playing = [];
+  for (const p of ranked) {
+    if (laggingIds.has(p.id) && playing.length < NEED) {
+      p._mustPlay = true; // mark for grouping
+      playing.push(p);
     }
-  };
+  }
+  for (const p of ranked) {
+    if (playing.length >= NEED) break;
+    if (!playing.find(x => x.id === p.id)) {
+      playing.push(p);
+    }
+  }
 
-  // a) eligible & not consecutive
-  tryBench(p => benchEligible.has(p.id) && !avoidConsecutive.has(p.id));
-  // b) eligible (even if consecutive)
-  tryBench(p => benchEligible.has(p.id));
-  // c) not consecutive
-  tryBench(p => !avoidConsecutive.has(p.id));
-  // d) anyone
-  tryBench(_ => true);
+  // benches are everyone else
+  const playingIds = new Set(playing.map(p => p.id));
+  const benched = present.filter(p => !playingIds.has(p.id));
 
-  // Try to swap to avoid consecutive benches if possible
-  if (MAX_CONSECUTIVE_BENCH > 0) {
-    for (let i = 0; i < bench.length; i++) {
-      const p = bench[i];
-      if (avoidConsecutive.has(p.id)) {
-        const swap = ranked.find(x =>
-          !bench.find(b => b.id === x.id) && !avoidConsecutive.has(x.id)
+  // ---- still honor “no immediate consecutive bench” where possible ----
+  if (benched.length > 0 && MAX_CONSECUTIVE_BENCH > 0 && lastRoundBenched && lastRoundBenched.size > 0) {
+    for (let i = 0; i < benched.length; i++) {
+      const b = benched[i];
+      if (lastRoundBenched.has(b.id)) {
+        // try to swap with some playing player who is NOT lagging
+        const swap = playing.find(p =>
+          !laggingIds.has(p.id) &&
+          !lastRoundBenched.has(p.id)
         );
-        if (swap) bench[i] = swap;
+        if (swap) {
+          // swap them
+          benched[i] = swap;
+          const idx = playing.findIndex(x => x.id === swap.id);
+          playing[idx] = b;
+          playingIds.delete(swap.id);
+          playingIds.add(b.id);
+        }
       }
     }
   }
 
-  const benchIds = new Set(bench.map(b => b.id));
-  const playing = ranked.filter(p => !benchIds.has(p.id)).slice(0, NEED);
-  return { playing, benched: bench };
+  return { playing, benched };
 }
 
 /**
  * Build matches from selected players using the active mode.
+ * Players with _mustPlay=true are allowed a slightly wider band/window during grouping.
+ *
  * @param {Array} players - length divisible by 4
  * @param {Map<string, Array<number>>} teammateHistory
  * @param {number} courtsCount
@@ -173,7 +199,6 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
     groups = chunk(sorted, 4).slice(0, totalCourts);
   }
 
-  // Build matches with BALANCED PAIRING: (p1,p4) vs (p2,p3)
   const matches = [];
   let courtNo = 1;
 
@@ -201,6 +226,7 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
 /* ========================= Grouping algorithms ========================= */
 
 // WINDOW MODE: group quads where (max-min) ≤ window; expand window only if needed
+// Players marked _mustPlay are allowed window+1 (Tier 2 support)
 function makeGroupsWindow(sortedPlayers, courtCount) {
   for (let window = START_SKILL_WINDOW; window <= MAX_SKILL_WINDOW; window++) {
     const groups = greedyWindowGroups(sortedPlayers, courtCount, window);
@@ -216,27 +242,29 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
   for (let i = 0; i < sortedPlayers.length && groups.length < courtCount; i++) {
     if (used.has(i)) continue;
 
-    // try to pick 4 within window from i outward
+    const root = sortedPlayers[i];
+    const minSkill = root.skill_level;
     const pickIdx = [i];
-    const minSkill = sortedPlayers[i].skill_level;
 
-    // forward sweep
+    // try forward first
     for (let j = i + 1; j < sortedPlayers.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
-      const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) {
-        if (!pickIdx.includes(j)) pickIdx.push(j);  // <-- prevent duplicates
+      const candidate = sortedPlayers[j];
+      const s = candidate.skill_level;
+      const allowExtra = root._mustPlay || candidate._mustPlay;
+      if (s - minSkill <= window + (allowExtra ? 1 : 0)) {
+        pickIdx.push(j);
       } else {
         break;
       }
     }
-
-    // backward sweep (from end) to fill remaining slots
+    // then backward (from end)
     for (let j = sortedPlayers.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
-      const s = sortedPlayers[j].skill_level;
-      if (s - minSkill <= window) {
+      const candidate = sortedPlayers[j];
+      const s = candidate.skill_level;
+      const allowExtra = root._mustPlay || candidate._mustPlay;
+      if (s - minSkill <= window + (allowExtra ? 1 : 0)) {
         pickIdx.push(j);
       }
     }
@@ -248,10 +276,12 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
       groups.push(quad);
     }
   }
+
   return groups;
 }
 
 // BAND MODE: assign band index; allow band±1; expand band window only if needed
+// Players marked _mustPlay are allowed bandWindow+1 (Tier 2 support)
 function makeGroupsBand(sortedPlayers, courtCount) {
   const withBand = sortedPlayers.map(p => ({ ...p, _band: bandOf(p.skill_level) }));
   for (let bandWindow = 0; bandWindow <= MAX_BAND_EXPANSION; bandWindow++) {
@@ -271,25 +301,25 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
     const minBand = root._band;
 
     const pickIdx = [i];
-
-    // forward sweep: same band or within ±bandWindow
+    // forward
     for (let j = i + 1; j < playersWithBand.length && pickIdx.length < 4; j++) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
-      const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) {
+      const candidate = playersWithBand[j];
+      const bj = candidate._band;
+      const allowExtra = root._mustPlay || candidate._mustPlay;
+      if (Math.abs(bj - minBand) <= bandWindow + (allowExtra ? 1 : 0)) {
         pickIdx.push(j);
-      } else if (bj - minBand > bandWindow) {
+      } else if (bj - minBand > bandWindow + 1) {
         break;
       }
     }
-
-    // backward sweep from end to fill
+    // backward
     for (let j = playersWithBand.length - 1; j > i && pickIdx.length < 4; j--) {
       if (used.has(j)) continue;
-      if (pickIdx.includes(j)) continue;            // <-- prevent duplicates
-      const bj = playersWithBand[j]._band;
-      if (Math.abs(bj - minBand) <= bandWindow) {
+      const candidate = playersWithBand[j];
+      const bj = candidate._band;
+      const allowExtra = root._mustPlay || candidate._mustPlay;
+      if (Math.abs(bj - minBand) <= bandWindow + (allowExtra ? 1 : 0)) {
         pickIdx.push(j);
       }
     }
@@ -307,9 +337,8 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
 
 function bandOf(level) {
   for (let i = 0; i < BANDS.length; i++) {
-    if (level >= BANDS[i].min && level <= BANDS[i].max) return i; // 0..4
+    if (level >= BANDS[i].min && level <= BANDS[i].max) return i;
   }
-  // clamp out-of-range
   if (level < BANDS[0].min) return 0;
   return BANDS.length - 1;
 }

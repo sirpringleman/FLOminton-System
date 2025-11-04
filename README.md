@@ -22,9 +22,9 @@ LEFT TO DO:
 - UI Improvements                                                             - DONE
 - Function to swap out player on a court with someone sitting out easily
 - Function to block / reduce available courts                                 - DONE
-- Sound Check
+- Sound Check                                                                 - DONE
 - Logic fix                                           - DONE (live testing required)
-- Function to have 2 at least, but preferably multiple, separate player databases that can be switched      -
+- Function to have 2 at least, but preferably multiple, separate player databases that can be switched                                                               -
   between when in admin mode, to accommodate more clubs (or at least 2)
 - Small bug / UI fixes                                                  - DONE (5/5)
     - round # not increasing each time round ends                             - DONE
