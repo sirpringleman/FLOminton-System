@@ -140,6 +140,7 @@ export default function App() {
   const [transitionSeconds, setTransitionSeconds] = useState(
     LS.getNum('flo.transition.seconds', 30, 5, 120)
   );
+  const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 12));
 
   const [timerLeft, setTimerLeft] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
   const [transitionLeft, setTransitionLeft] = useState(transitionSeconds);
@@ -171,27 +172,15 @@ export default function App() {
 
   /* ---------- load players on mount ---------- */
   useEffect(() => {
-    if (view === 'display') {
-      // display-only view opened directly; we still need player list to show present count & benched names
-      (async () => {
-        try {
-          const list = await APIClient.listPlayers();
-          setPlayers(list);
-        } catch (e) {
-          console.error(e);
-        } finally {
-          setLoading(false);
-        }
-      })();
-      return;
-    }
     (async () => {
       try {
         const list = await APIClient.listPlayers();
         setPlayers(list);
       } catch (e) {
         console.error(e);
-        alert('Could not load players (Netlify function). Check logs / env.');
+        if (view !== 'display') {
+          alert('Could not load players (Netlify function). Check logs / env.');
+        }
       } finally {
         setLoading(false);
       }
@@ -201,6 +190,18 @@ export default function App() {
   /* ---------- derived lists ---------- */
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
+
+  /* ---------- presence toggle ---------- */
+  async function togglePresent(p) {
+    const nv = !p.is_present;
+    setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
+    try {
+      await APIClient.patch([{ id: p.id, is_present: nv }], adminKey);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to save presence toggle');
+    }
+  }
 
   /* =========================================================
      TIMER / PHASE LOGIC
@@ -277,12 +278,12 @@ export default function App() {
       present,
       nextRound,
       lastRoundBenched.current,
-      4
+      courtsCount
     );
     lastRoundBenched.current = new Set(benched.map((b) => b.id));
     setBenched(benched);
 
-    const ms = buildMatchesFrom16(playing, teammateHistory.current, 4);
+    const ms = buildMatchesFrom16(playing, teammateHistory.current, courtsCount);
     setMatches(ms);
 
     const diagSnap = computeDiagnostics(ms);
@@ -458,15 +459,17 @@ export default function App() {
     setShowSettings(true);
   }
 
-  function saveSettings(mins, warn, vol, transitionSec) {
+  function saveSettings(mins, warn, vol, transitionSec, courts) {
     LS.set('flo.round.minutes', mins);
     LS.set('flo.warn.seconds', warn);
     LS.set('flo.volume', vol);
     LS.set('flo.transition.seconds', transitionSec);
+    LS.set('flo.courts', courts);
     setTimerTotal(mins * 60);
     setTimerLeft(mins * 60);
     setWarnSeconds(warn);
     setTransitionSeconds(transitionSec);
+    setCourtsCount(courts);
     volumeRef.current = vol;
     setShowSettings(false);
   }
@@ -482,6 +485,78 @@ export default function App() {
     sessionStorage.removeItem('adminKey');
     setAdminKey('');
     alert('Admin mode disabled');
+  }
+
+  /* =========================================================
+     ADMIN PANEL (add / edit / delete)
+     ========================================================= */
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [newPlayerGender, setNewPlayerGender] = useState('M');
+  const [newPlayerLevel, setNewPlayerLevel] = useState(5);
+
+  async function saveAllPlayers() {
+    if (!isAdmin) {
+      alert('Admin key required.');
+      return;
+    }
+    try {
+      await APIClient.upsert(players, adminKey);
+      alert('Saved.');
+    } catch (e) {
+      console.error(e);
+      alert('Failed to save players.');
+    }
+  }
+
+  async function addPlayer() {
+    if (!isAdmin) {
+      alert('Admin key required.');
+      return;
+    }
+    const name = newPlayerName.trim();
+    if (!name) return;
+    const tempId = 'temp-' + Math.random().toString(36).slice(2);
+    const newP = {
+      id: tempId,
+      name,
+      gender: newPlayerGender,
+      skill_level: Number(newPlayerLevel) || 1,
+      is_present: false,
+      bench_count: 0,
+      last_played_round: 0,
+    };
+    const nextPlayers = [...players, newP];
+    setPlayers(nextPlayers);
+    setNewPlayerName('');
+    try {
+      await APIClient.upsert([newP], adminKey);
+      const refreshed = await APIClient.listPlayers();
+      setPlayers(refreshed);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to add player.');
+    }
+  }
+
+  async function deletePlayer(id) {
+    if (!isAdmin) {
+      alert('Admin key required.');
+      return;
+    }
+    if (!window.confirm('Delete this player?')) return;
+    setPlayers((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await APIClient.remove([id], adminKey);
+    } catch (e) {
+      console.error(e);
+      alert('Failed to delete player on server.');
+    }
+  }
+
+  function updatePlayerLocal(id, field, value) {
+    setPlayers((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, [field]: value } : p))
+    );
   }
 
   /* =========================================================
@@ -563,6 +638,7 @@ export default function App() {
     const [warn, setWarn] = useState(warnSeconds);
     const [vol, setVol] = useState(volumeRef.current);
     const [trans, setTrans] = useState(transitionSeconds);
+    const [courts, setCourts] = useState(courtsCount);
     return (
       <div className="modal-backdrop">
         <div className="modal glass">
@@ -602,6 +678,17 @@ export default function App() {
               />
             </div>
             <div className="setting">
+              <label>Courts available</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                max="12"
+                value={courts}
+                onChange={(e) => setCourts(Number(e.target.value))}
+              />
+            </div>
+            <div className="setting">
               <label>Sound volume (0–1)</label>
               <input
                 className="input"
@@ -619,7 +706,7 @@ export default function App() {
             <button className="btn ghost" onClick={() => setShowSettings(false)}>
               Cancel
             </button>
-            <button className="btn" onClick={() => saveSettings(mins, warn, vol, trans)}>
+            <button className="btn" onClick={() => saveSettings(mins, warn, vol, trans, courts)}>
               Save
             </button>
           </div>
@@ -1049,6 +1136,104 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {isAdmin && (
+        <div className="panel glass" style={{ marginTop: 16 }}>
+          <div className="panel-head">
+            <h3>Admin Controls</h3>
+          </div>
+          <div className="admin-add-row">
+            <input
+              className="input"
+              placeholder="New player name"
+              value={newPlayerName}
+              onChange={(e) => setNewPlayerName(e.target.value)}
+            />
+            <select
+              className="input"
+              value={newPlayerGender}
+              onChange={(e) => setNewPlayerGender(e.target.value)}
+            >
+              <option value="M">M</option>
+              <option value="F">F</option>
+            </select>
+            <input
+              className="input"
+              type="number"
+              min="1"
+              max="10"
+              value={newPlayerLevel}
+              onChange={(e) => setNewPlayerLevel(Number(e.target.value))}
+            />
+            <button className="btn" onClick={addPlayer}>
+              Add
+            </button>
+            <button className="btn" onClick={saveAllPlayers}>
+              Save All
+            </button>
+          </div>
+          <div className="admin-table">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Gender</th>
+                  <th>Level</th>
+                  <th>Present</th>
+                  <th>Delete</th>
+                </tr>
+              </thead>
+              <tbody>
+                {players.map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <input
+                        className="input"
+                        value={p.name}
+                        onChange={(e) => updatePlayerLocal(p.id, 'name', e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <select
+                        className="input"
+                        value={p.gender}
+                        onChange={(e) => updatePlayerLocal(p.id, 'gender', e.target.value)}
+                      >
+                        <option value="M">M</option>
+                        <option value="F">F</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={p.skill_level}
+                        onChange={(e) =>
+                          updatePlayerLocal(p.id, 'skill_level', Number(e.target.value))
+                        }
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={p.is_present}
+                        onChange={() => togglePresent(p)}
+                      />
+                    </td>
+                    <td>
+                      <button className="btn danger" onClick={() => deletePlayer(p.id)}>
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {showSettings && <SettingsPanel />}
       {showRundown && <RundownModal />}
