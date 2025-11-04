@@ -228,11 +228,11 @@ export default function App() {
     tickRef.current = setInterval(() => {
       setTimerLeft((prev) => {
         const next = prev - 1;
-        if (next === warnSeconds) beep(1200, 350);
+        if (next === warnSeconds) beep(1200, 3000);
         if (next <= 0) {
           clearTick();
           setRunning(false);
-          beep(500, 700);
+          beep(500, 5000);
           (async () => {
             await nextRoundInternal();
             setTransitionLeft(transitionSeconds);
@@ -255,7 +255,7 @@ export default function App() {
         if (next <= 0) {
           clearTick();
           setRunning(false);
-          beep(850, 400);
+          beep(850, 5000);
           setTimerLeft(timerTotal);
           startRoundTimer();
           return 0;
