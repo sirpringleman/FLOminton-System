@@ -17,7 +17,7 @@ const APIClient = {
     const res = await fetch(API, { method: 'GET' });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message || 'Failed to load players');
-    return (data || []).map(p => ({
+    return (data || []).map((p) => ({
       id: p.id,
       name: p.name,
       gender: p.gender || 'M',
@@ -68,7 +68,7 @@ const APIClient = {
   },
 };
 
-/* ================= Local Storage helpers ================= */
+/* ================= Local Storage helpers (settings only) ================= */
 const LS = {
   getNum(k, def, min, max) {
     try {
@@ -81,20 +81,6 @@ const LS = {
     try {
       localStorage.setItem(k, String(v));
     } catch {}
-  },
-
-  setDisplay(payload) {
-    try {
-      localStorage.setItem('flo.display.payload', JSON.stringify(payload));
-    } catch {}
-  },
-  getDisplay() {
-    try {
-      const raw = localStorage.getItem('flo.display.payload');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
   },
 };
 
@@ -142,37 +128,31 @@ export default function App() {
   const [matches, setMatches] = useState([]);
   const [benched, setBenched] = useState([]);
 
-  // view: home vs session vs display
-  const [showHome, setShowHome] = useState(() => !getInitialUiIsDisplay());
-  const [isDisplay, setIsDisplay] = useState(() => getInitialUiIsDisplay());
+  // view: 'home' | 'session' | 'display'
+  const [view, setView] = useState(() => getInitialView());
 
-  // timer + phases
   // phase: 'stopped' | 'round' | 'transition'
   const [phase, setPhase] = useState('stopped');
   const [running, setRunning] = useState(false);
+
   const [timerTotal, setTimerTotal] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
   const [warnSeconds, setWarnSeconds] = useState(LS.getNum('flo.warn.seconds', 30, 5, 120));
   const [transitionSeconds, setTransitionSeconds] = useState(
     LS.getNum('flo.transition.seconds', 30, 5, 120)
   );
+
   const [timerLeft, setTimerLeft] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
   const [transitionLeft, setTransitionLeft] = useState(transitionSeconds);
 
   const tickRef = useRef(null);
 
-  // settings / admin
   const [showSettings, setShowSettings] = useState(false);
   const [showRundown, setShowRundown] = useState(false);
   const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem('adminKey') || '');
   const isAdmin = !!adminKey;
 
-  // match mode shown even if not admin (per latest instructions)
   const [matchMode, setMatchModeState] = useState(() => getMatchMode());
 
-  // display syncing
-  const lastDisplayTs = useRef(0);
-
-  // diagnostics store (for System Diagnostics tab)
   const [diag, setDiag] = useState({
     roundBuildTimes: [],
     usedCourts: [],
@@ -181,22 +161,30 @@ export default function App() {
     outOfBandCounts: [],
   });
 
-  // per-player session stats (for Smart Session Summary)
   const [sessionStats, setSessionStats] = useState(() => new Map());
 
-  // rematch memory (logic.js uses it but we keep it here)
   const teammateHistory = useRef(new Map());
-
-  // last round's benched IDs (fairness)
   const lastRoundBenched = useRef(new Set());
 
-  // sound
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
   const { beep } = useBeep(volumeRef);
 
   /* ---------- load players on mount ---------- */
   useEffect(() => {
-    if (isDisplay) return; // display page pulls from localStorage
+    if (view === 'display') {
+      // display-only view opened directly; we still need player list to show present count & benched names
+      (async () => {
+        try {
+          const list = await APIClient.listPlayers();
+          setPlayers(list);
+        } catch (e) {
+          console.error(e);
+        } finally {
+          setLoading(false);
+        }
+      })();
+      return;
+    }
     (async () => {
       try {
         const list = await APIClient.listPlayers();
@@ -208,128 +196,16 @@ export default function App() {
         setLoading(false);
       }
     })();
-  }, [isDisplay]);
+  }, [view]);
 
   /* ---------- derived lists ---------- */
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
 
-  /* ---------- display sync ---------- */
-  const pushDisplay = (override = {}) => {
-    const payload = {
-      kind: 'flo-display-v1',
-      ts: Date.now(),
-      round,
-      running,
-      phase,
-      timeLeft: phase === 'round' ? timerLeft : transitionLeft,
-      timerTotal,
-      transitionSeconds,
-      warnSeconds,
-      presentCount: present.length,
-      matches: matches.map((m) => ({
-        court: m.court,
-        avg1: m.avg1,
-        avg2: m.avg2,
-        team1: m.team1.map((p) => ({
-          id: p.id,
-          name: p.name,
-          gender: p.gender,
-          skill_level: p.skill_level,
-        })),
-        team2: m.team2.map((p) => ({
-          id: p.id,
-          name: p.name,
-          gender: p.gender,
-          skill_level: p.skill_level,
-        })),
-      })),
-      benched: benched.map((p) => ({
-        id: p.id,
-        name: p.name,
-        gender: p.gender,
-        skill_level: p.skill_level,
-      })),
-      ...override,
-    };
-    LS.setDisplay(payload);
-  };
-
-  // display-mode reader
-  useEffect(() => {
-    if (!isDisplay) return;
-    const apply = (payload) => {
-      if (!payload || payload.kind !== 'flo-display-v1') return;
-      if (payload.ts && payload.ts <= lastDisplayTs.current) return;
-      lastDisplayTs.current = payload.ts || Date.now();
-
-      setRound(Number(payload.round || 0));
-      setRunning(!!payload.running);
-      setPhase(payload.phase || 'stopped');
-      setTimerTotal(Number(payload.timerTotal || 12 * 60));
-      setTransitionSeconds(Number(payload.transitionSeconds || 30));
-      setWarnSeconds(Number(payload.warnSeconds || 30));
-      if (payload.phase === 'round') {
-        setTimerLeft(Number(payload.timeLeft || 0));
-      } else {
-        setTransitionLeft(Number(payload.timeLeft || 0));
-      }
-
-      if (Array.isArray(payload.matches)) {
-        const active = !!payload.running || (payload.round || 0) > 0;
-        if (active && payload.matches.length === 0) {
-          // ignore empty to avoid flicker
-        } else {
-          setMatches(
-            payload.matches.map((m) => ({
-              court: m.court,
-              avg1: m.avg1,
-              avg2: m.avg2,
-              team1: m.team1 || [],
-              team2: m.team2 || [],
-            }))
-          );
-        }
-      }
-      if (Array.isArray(payload.benched)) {
-        setBenched(payload.benched);
-      }
-    };
-
-    // initial
-    apply(LS.getDisplay());
-    const onStorage = (e) => {
-      if (e.key === 'flo.display.payload' && e.newValue) {
-        try {
-          apply(JSON.parse(e.newValue));
-        } catch {}
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    const poll = setInterval(() => apply(LS.getDisplay()), 800);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      clearInterval(poll);
-    };
-  }, [isDisplay]);
-
-  /* ---------- presence toggle ---------- */
-  async function togglePresent(p) {
-    const nv = !p.is_present;
-    setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
-    try {
-      await APIClient.patch([{ id: p.id, is_present: nv }], adminKey);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to save presence toggle');
-    }
-  }
-
   /* =========================================================
      TIMER / PHASE LOGIC
      ========================================================= */
   const isWarn = phase === 'round' && running && timerLeft <= warnSeconds;
-  const isBlink = (phase === 'transition' && running) || (phase === 'round' && !running && timerLeft === 0);
 
   function clearTick() {
     if (tickRef.current) {
@@ -342,17 +218,14 @@ export default function App() {
     clearTick();
     setPhase('round');
     setRunning(true);
-    pushDisplay({ phase: 'round', running: true, timeLeft: timerLeft });
     tickRef.current = setInterval(() => {
       setTimerLeft((prev) => {
         const next = prev - 1;
-        pushDisplay({ phase: 'round', running: true, timeLeft: next });
         if (next === warnSeconds) beep(1200, 350);
         if (next <= 0) {
           clearTick();
           setRunning(false);
           beep(500, 700);
-          // build next round immediately, THEN start transition timer
           (async () => {
             await nextRoundInternal();
             setTransitionLeft(transitionSeconds);
@@ -369,16 +242,13 @@ export default function App() {
     clearTick();
     setPhase('transition');
     setRunning(true);
-    pushDisplay({ phase: 'transition', running: true, timeLeft: transitionSeconds });
     tickRef.current = setInterval(() => {
       setTransitionLeft((prev) => {
         const next = prev - 1;
-        pushDisplay({ phase: 'transition', running: true, timeLeft: next });
         if (next <= 0) {
           clearTick();
           setRunning(false);
-          beep(850, 400); // "start playing" beep
-          // start real round timer (matches are already built)
+          beep(850, 400);
           setTimerLeft(timerTotal);
           startRoundTimer();
           return 0;
@@ -391,7 +261,6 @@ export default function App() {
   function stopTimer() {
     clearTick();
     setRunning(false);
-    pushDisplay({ running: false });
   }
 
   /* =========================================================
@@ -416,7 +285,6 @@ export default function App() {
     const ms = buildMatchesFrom16(playing, teammateHistory.current, 4);
     setMatches(ms);
 
-    // diagnostics snapshot
     const diagSnap = computeDiagnostics(ms);
     const t1 = performance.now();
     const buildMs = Math.max(0, t1 - t0);
@@ -428,10 +296,8 @@ export default function App() {
       outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
     }));
 
-    // per-player session stats
     setSessionStats((prev) => {
       const next = new Map(prev);
-      // playing => +1 played, reset benched gap
       playing.forEach((p) => {
         const cur = next.get(p.id) || {
           id: p.id,
@@ -452,7 +318,6 @@ export default function App() {
         cur.currentBenchStreak = 0;
         next.set(p.id, cur);
       });
-      // benched => +1 benched, increment gap
       benched.forEach((p) => {
         const cur = next.get(p.id) || {
           id: p.id,
@@ -475,17 +340,16 @@ export default function App() {
         cur.benchGap.push(cur.currentGap);
         next.set(p.id, cur);
       });
-      // teammates/opponents
       ms.forEach((match) => {
         const t1 = match.team1;
         const t2 = match.team2;
         if (t1.length === 2 && t2.length === 2) {
           const [a, b] = t1;
           const [c, d] = t2;
-          const up = (p, teamMates, opps) => {
+          const up = (p, tm, op) => {
             const cur = next.get(p.id);
-            teamMates.forEach((tm) => cur.teammates.add(tm.id));
-            opps.forEach((op) => cur.opponents.add(op.id));
+            tm.forEach((x) => cur.teammates.add(x.id));
+            op.forEach((x) => cur.opponents.add(x.id));
           };
           up(a, [b], [c, d]);
           up(b, [a], [c, d]);
@@ -495,9 +359,6 @@ export default function App() {
       });
       return next;
     });
-
-    // send to display
-    pushDisplay({ matches: ms, benched });
   }
 
   async function nextRoundInternal() {
@@ -508,26 +369,18 @@ export default function App() {
   }
 
   /* =========================================================
-     UI ACTIONS (top toolbar)
+     UI ACTIONS
      ========================================================= */
-
-  // Begin Night: just enter Session view — NO building
   function onBeginNight() {
-    setShowHome(false);
-    // we stay in stopped phase until user hits Build/Resume
+    setView('session');
   }
 
-  // Build/Resume: if no matches -> build; else resume timer
   async function onBuildResume() {
     if (matches.length === 0) {
-      // build but do NOT auto start transition — user wants manual resume to start timer?
       await nextRoundInternal();
-      // keep phase stopped; user can now hit Build/Resume again to start round
       setTimerLeft(timerTotal);
       setPhase('stopped');
-      pushDisplay({ matches, benched, phase: 'stopped', running: false });
     } else {
-      // just resume current phase — always to round timer
       if (phase === 'transition') {
         startTransitionTimer();
       } else {
@@ -540,7 +393,6 @@ export default function App() {
     stopTimer();
   }
 
-  // Next Round: force new quads, skip transition, start round timer directly
   async function onNextRound() {
     await nextRoundInternal();
     setTimerLeft(timerTotal);
@@ -549,9 +401,7 @@ export default function App() {
   }
 
   async function onEndNight() {
-    // open summary
     setShowRundown(true);
-    // reset present + bench_count on frontend
     const resetPlayers = players.map((p) => ({
       ...p,
       is_present: false,
@@ -565,7 +415,7 @@ export default function App() {
     roundRef.current = 0;
     stopTimer();
     setPhase('stopped');
-    setShowHome(true);
+    setView('home');
     lastRoundBenched.current = new Set();
     teammateHistory.current = new Map();
     setSessionStats(new Map());
@@ -576,7 +426,6 @@ export default function App() {
       spanPerMatch: [],
       outOfBandCounts: [],
     });
-    // persist reset
     try {
       await APIClient.patch(
         resetPlayers.map((p) => ({
@@ -593,29 +442,22 @@ export default function App() {
   }
 
   function openDisplay() {
-    pushDisplay();
-    const url = new URL(window.location.href);
-    url.searchParams.set('display', '1');
-    window.open(url.toString(), '_blank', 'noopener,noreferrer');
+    setView('display');
   }
 
-  // mode toggle is public
   function toggleMode() {
     const next = matchMode === MATCH_MODES.WINDOW ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
     setMatchModeState(next);
     setMatchMode(next);
-    // if we're mid-night and have matches, rebuild to reflect new mode
-    if (!isDisplay && round > 0) {
+    if (view !== 'display' && round > 0) {
       nextRoundInternal();
     }
   }
 
-  /* =========================================================
-     SETTINGS
-     ========================================================= */
   function openSettings() {
     setShowSettings(true);
   }
+
   function saveSettings(mins, warn, vol, transitionSec) {
     LS.set('flo.round.minutes', mins);
     LS.set('flo.warn.seconds', warn);
@@ -627,17 +469,8 @@ export default function App() {
     setTransitionSeconds(transitionSec);
     volumeRef.current = vol;
     setShowSettings(false);
-    pushDisplay({
-      timerTotal: mins * 60,
-      warnSeconds: warn,
-      transitionSeconds: transitionSec,
-      timeLeft: mins * 60,
-    });
   }
 
-  /* =========================================================
-     ADMIN
-     ========================================================= */
   function adminLogin() {
     const key = prompt('Enter admin key:');
     if (!key) return;
@@ -652,7 +485,7 @@ export default function App() {
   }
 
   /* =========================================================
-     DIAGNOSTICS HELPERS
+     DIAGNOSTICS + SUMMARY HELPERS
      ========================================================= */
   function computeDiagnostics(roundMatches) {
     const used = roundMatches.length;
@@ -667,7 +500,9 @@ export default function App() {
     });
     const avgSpan = spans.length ? spans.reduce((a, b) => a + b, 0) / spans.length : 0;
     const outOfBand = roundMatches.reduce((acc, m) => {
-      const skills = [...m.team1, ...m.team2].map((p) => Number(p.skill_level || 0)).sort((a, b) => a - b);
+      const skills = [...m.team1, ...m.team2]
+        .map((p) => Number(p.skill_level || 0))
+        .sort((a, b) => a - b);
       if (skills.length < 4) return acc;
       const mid = (skills[1] + skills[2]) / 2;
       return acc + skills.filter((s) => Math.abs(s - mid) > 2).length;
@@ -701,7 +536,7 @@ export default function App() {
           )}
         </div>
         <div className="team-row">{m.team1.map(Tag)}</div>
-        <div className="team-divider" />
+        <div className="slot-bar" />
         <div className="team-row">{m.team2.map(Tag)}</div>
       </div>
     );
@@ -793,7 +628,6 @@ export default function App() {
     );
   }
 
-  /* ---------- Smart Session Summary / Diagnostics ---------- */
   function buildSmartSummary() {
     const per = Array.from(sessionStats.values()).map((p) => {
       const gaps = p.benchGap.length ? p.benchGap : [0];
@@ -810,15 +644,6 @@ export default function App() {
         opponents: p.opponents.size,
       };
     });
-    const totalRounds = roundRef.current;
-    const presentCount = present.length; // current
-    let males = 0,
-      females = 0;
-    players.forEach((p) => {
-      if (p.gender === 'F') females++;
-      else males++;
-    });
-
     const plays = per.map((p) => p.played);
     const mean = plays.length ? plays.reduce((a, b) => a + b, 0) / plays.length : 0;
     const variance =
@@ -830,20 +655,29 @@ export default function App() {
     const fairnessRatio = mean ? stdDev / mean : 0;
 
     return {
-      rounds: totalRounds,
+      rounds: roundRef.current,
       participantsCount: players.length,
-      males,
-      females,
+      males: players.filter((p) => p.gender !== 'F').length,
+      females: players.filter((p) => p.gender === 'F').length,
       per,
       meanPlays: mean,
       stdDev,
       spread,
       fairnessRatio,
-      copyText: `FLOminton Summary\nRounds: ${totalRounds}\nParticipants: ${players.length}\nFairness: mean=${mean.toFixed(
-        2
-      )} stdev=${stdDev.toFixed(2)} spread=${spread}`,
+      copyText: `FLOminton Summary\nRounds: ${roundRef.current}\nParticipants: ${
+        players.length
+      }\nFairness: mean=${mean.toFixed(2)} stdev=${stdDev.toFixed(2)} spread=${spread}`,
       csvRows: [
-        ['name', 'level', 'played', 'benched', 'avg_bench_gap', 'worst_bench_streak', 'unique_teammates', 'unique_opponents'],
+        [
+          'name',
+          'level',
+          'played',
+          'benched',
+          'avg_bench_gap',
+          'worst_bench_streak',
+          'unique_teammates',
+          'unique_opponents',
+        ],
         ...per.map((p) => [
           p.name,
           p.level,
@@ -866,6 +700,7 @@ export default function App() {
     a.download = 'flo-session.csv';
     a.click();
   }
+
   function copyToClipboard(text) {
     navigator.clipboard?.writeText(text);
   }
@@ -903,8 +738,9 @@ export default function App() {
                 <div>
                   <h4>Fairness</h4>
                   <div>
-                    Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev: <b>{S.stdDev.toFixed(2)}</b> &nbsp;
-                    Spread: <b>{S.spread}</b> &nbsp; Ratio: <b>{S.fairnessRatio.toFixed(2)}</b>
+                    Mean plays: <b>{S.meanPlays.toFixed(2)}</b> &nbsp; StdDev:{' '}
+                    <b>{S.stdDev.toFixed(2)}</b> &nbsp; Spread: <b>{S.spread}</b> &nbsp; Ratio:{' '}
+                    <b>{S.fairnessRatio.toFixed(2)}</b>
                   </div>
                 </div>
               </div>
@@ -986,17 +822,17 @@ export default function App() {
     );
   }
 
-  /* ---------- Display view ---------- */
   function DisplayView() {
     const activeTime = phase === 'round' ? timerLeft : transitionLeft;
-    const headerClasses = `display-meta centered ${isWarn ? 'warn' : ''} ${
-      phase === 'transition' ? 'blink-redwhite' : ''
-    }`;
     return (
       <div className="display page">
         <div className="display-head">
           <div className="display-title centered">The FLOminton System</div>
-          <div className={headerClasses}>
+          <div
+            className={`display-meta centered ${isWarn ? 'warn' : ''} ${
+              phase === 'transition' ? 'blink-redwhite' : ''
+            }`}
+          >
             <span>Round {round || '-'}</span>
             <span>•</span>
             <span
@@ -1009,7 +845,11 @@ export default function App() {
             <span>•</span>
             <span>{present.length} present</span>
           </div>
-          <div className="display-hint centered">Press F for fullscreen</div>
+          <div className="display-hint centered">
+            <button className="btn ghost" onClick={() => setView('session')}>
+              ← Back to Session
+            </button>
+          </div>
         </div>
 
         <div className="display-courts">
@@ -1022,7 +862,6 @@ export default function App() {
           )}
         </div>
 
-        {/* benched bottom */}
         <div className="panel glass display-benched">
           <div className="panel-head centered">
             <h3>Benched Players</h3>
@@ -1044,7 +883,6 @@ export default function App() {
     );
   }
 
-  /* ---------- HOME view ---------- */
   function HomeView() {
     return (
       <div className="page centered" style={{ flexDirection: 'column', gap: 12 }}>
@@ -1073,23 +911,7 @@ export default function App() {
     );
   }
 
-  /* ---------- MAIN RENDER ---------- */
-  if (isDisplay) {
-    // allow fullscreen hotkey
-    useEffect(() => {
-      const onKey = (e) => {
-        if (e.key === 'f' || e.key === 'F') {
-          const el = document.documentElement;
-          if (!document.fullscreenElement) el.requestFullscreen?.();
-          else document.exitFullscreen?.();
-        }
-      };
-      window.addEventListener('keydown', onKey);
-      return () => window.removeEventListener('keydown', onKey);
-    }, []);
-    return <DisplayView />;
-  }
-
+  /* ---------- VIEW SWITCH ---------- */
   if (loading) {
     return (
       <div className="page centered">
@@ -1098,7 +920,17 @@ export default function App() {
     );
   }
 
-  if (showHome) {
+  if (view === 'display') {
+    return (
+      <>
+        <DisplayView />
+        {showSettings && <SettingsPanel />}
+        {showRundown && <RundownModal />}
+      </>
+    );
+  }
+
+  if (view === 'home') {
     return (
       <>
         <HomeView />
@@ -1110,10 +942,8 @@ export default function App() {
 
   return (
     <div className="page">
-      {/* Toolbar */}
       <div className="toolbar glass">
         <div className="toolbar-left">
-          {/* Begin Night lives on home only; here we show session controls */}
           <button className="btn" onClick={onPause} disabled={!running}>
             Pause
           </button>
@@ -1129,7 +959,6 @@ export default function App() {
           <button className="btn" onClick={openDisplay}>
             Open Display
           </button>
-          {/* mode toggle stays public */}
           <button className="btn" onClick={toggleMode}>
             Mode: {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}
           </button>
@@ -1157,7 +986,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Courts */}
       <div id="courts" className="courts-grid">
         {matches.map((m) => (
           <Court key={m.court} m={m} showLevels={isAdmin} showAverages={isAdmin} />
@@ -1169,7 +997,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Benched fixed rows (no scroll) */}
       <div className="panel glass">
         <div className="panel-head">
           <h3>Benched Players</h3>
@@ -1188,7 +1015,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Lists */}
       <div className="lists-grid">
         <div className="list-col">
           <div className="list-head">
@@ -1224,8 +1050,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Admin controls could go here if you later re-enable the full panel */}
-
       {showSettings && <SettingsPanel />}
       {showRundown && <RundownModal />}
     </div>
@@ -1233,7 +1057,7 @@ export default function App() {
 }
 
 /* ================= Utilities ================= */
-function getInitialUiIsDisplay() {
+function getInitialView() {
   const url = new URL(window.location.href);
-  return url.searchParams.get('display') === '1';
+  return url.searchParams.get('display') === '1' ? 'display' : 'home';
 }
