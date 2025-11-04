@@ -93,6 +93,7 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   if (NEED <= 0) return { playing: [], benched: present.slice() };
 
   // ---- Tier 1: base fairness ordering ----
+  // IMPORTANT: sort DESC by (bench_count + debt)
   const ranked = present.slice().sort((a, b) => {
     const benchA = a.bench_count || 0;
     const benchB = b.bench_count || 0;
@@ -100,10 +101,15 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
     const debtB  = lastRoundBenched?.has(b.id) ? 0.5 : 0;
     const scoreA = benchA + debtA;
     const scoreB = benchB + debtB;
-    if (scoreA !== scoreB) return scoreA - scoreB;
+
+    // higher score (more benched) should come FIRST
+    if (scoreA !== scoreB) return scoreB - scoreA;
+
     const lpa = a.last_played_round || 0;
     const lpb = b.last_played_round || 0;
+    // older last_played_round should come first
     if (lpa !== lpb) return lpa - lpb;
+
     return Math.random() - 0.5;
   });
 
@@ -179,7 +185,7 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
     groups = makeGroupsWindow(sorted, totalCourts);
   }
 
-  // ❗ FIX: if grouping couldn’t make all courts, fall back to a chunk that
+  // if grouping couldn’t make all courts, fall back to a chunk that
   // puts _mustPlay players first, so debt players actually get a court.
   if (groups.length !== totalCourts) {
     const prioritized = players
