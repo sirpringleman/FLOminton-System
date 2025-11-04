@@ -68,7 +68,7 @@ const APIClient = {
   },
 };
 
-/* ================= Local Storage helpers (settings only) ================= */
+/* ================= Local Storage helpers ================= */
 const LS = {
   getNum(k, def, min, max) {
     try {
@@ -118,7 +118,6 @@ function useBeep(volumeRef) {
    APP
    ========================================================= */
 export default function App() {
-  /* ---------- core state ---------- */
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -128,10 +127,8 @@ export default function App() {
   const [matches, setMatches] = useState([]);
   const [benched, setBenched] = useState([]);
 
-  // view: 'home' | 'session' | 'display'
   const [view, setView] = useState(() => getInitialView());
 
-  // phase: 'stopped' | 'round' | 'transition'
   const [phase, setPhase] = useState('stopped');
   const [running, setRunning] = useState(false);
 
@@ -140,7 +137,6 @@ export default function App() {
   const [transitionSeconds, setTransitionSeconds] = useState(
     LS.getNum('flo.transition.seconds', 30, 5, 120)
   );
-  // default to 4 courts
   const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 12));
 
   const [timerLeft, setTimerLeft] = useState(LS.getNum('flo.round.minutes', 12, 3, 60) * 60);
@@ -171,7 +167,6 @@ export default function App() {
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
   const { beep } = useBeep(volumeRef);
 
-  /* ---------- load players on mount ---------- */
   useEffect(() => {
     (async () => {
       try {
@@ -188,11 +183,9 @@ export default function App() {
     })();
   }, [view]);
 
-  /* ---------- derived lists ---------- */
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
 
-  /* ---------- presence toggle ---------- */
   async function togglePresent(p) {
     const nv = !p.is_present;
     setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
@@ -204,9 +197,6 @@ export default function App() {
     }
   }
 
-  /* =========================================================
-     TIMER / PHASE LOGIC
-     ========================================================= */
   const isWarn = phase === 'round' && running && timerLeft <= warnSeconds;
 
   function clearTick() {
@@ -265,9 +255,6 @@ export default function App() {
     setRunning(false);
   }
 
-  /* =========================================================
-     ROUND BUILD + PERSISTENCE
-     ========================================================= */
   async function buildNextRound(nextRound) {
     if (present.length < 4) {
       alert('Not enough players present.');
@@ -370,9 +357,6 @@ export default function App() {
     await buildNextRound(next);
   }
 
-  /* =========================================================
-     UI ACTIONS
-     ========================================================= */
   function onBeginNight() {
     setView('session');
   }
@@ -488,9 +472,6 @@ export default function App() {
     alert('Admin mode disabled');
   }
 
-  /* =========================================================
-     ADMIN PANEL (add / edit / delete)
-     ========================================================= */
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerGender, setNewPlayerGender] = useState('M');
   const [newPlayerLevel, setNewPlayerLevel] = useState(5);
@@ -560,9 +541,6 @@ export default function App() {
     );
   }
 
-  /* =========================================================
-     DIAGNOSTICS + SUMMARY HELPERS
-     ========================================================= */
   function computeDiagnostics(roundMatches) {
     const used = roundMatches.length;
     const imbalances = roundMatches.map((m) => Math.abs((m.avg1 || 0) - (m.avg2 || 0)));
@@ -586,9 +564,6 @@ export default function App() {
     return { used, avgImbalance, avgSpan, outOfBand };
   }
 
-  /* =========================================================
-     RENDER HELPERS
-     ========================================================= */
   function Court({ m, large = false, showLevels, showAverages }) {
     const Tag = (pl) => (
       <div className={`tag ${large ? 'lg' : ''}`} key={pl.id}>
@@ -611,13 +586,23 @@ export default function App() {
             </div>
           )}
         </div>
-        <div className="team-row">{m.team1.map(Tag)}</div>
-        {/* court divider (thicker) */}
-        <div
-          className="slot-bar court-divider"
-          style={{ borderTop: '4px solid rgba(255,255,255,0.4)', margin: '8px 0' }}
-        />
-        <div className="team-row">{m.team2.map(Tag)}</div>
+        <div className="court-body">
+          <div className="team-side">{m.team1.map(Tag)}</div>
+          {/* badminton net style (vertical) */}
+          <div
+            className="court-net"
+            style={{
+              width: '5px',
+              backgroundImage:
+                'linear-gradient(to bottom, rgba(255,255,255,0.8) 50%, rgba(255,255,255,0) 50%)',
+              backgroundSize: '5px 10px',
+              backgroundColor: 'rgba(255,255,255,0.15)',
+              borderRadius: '3px',
+              alignSelf: 'stretch',
+            }}
+          />
+          <div className="team-side">{m.team2.map(Tag)}</div>
+        </div>
       </div>
     );
   }
@@ -1003,7 +988,6 @@ export default function App() {
     );
   }
 
-  /* ---------- VIEW SWITCH ---------- */
   if (loading) {
     return (
       <div className="page centered">
@@ -1246,7 +1230,6 @@ export default function App() {
   );
 }
 
-/* ================= Utilities ================= */
 function getInitialView() {
   const url = new URL(window.location.href);
   return url.searchParams.get('display') === '1' ? 'display' : 'home';
