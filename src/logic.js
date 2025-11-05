@@ -12,6 +12,11 @@
    Tier 1 (always): sort by bench_count, then last_played_round, add small debt for “benched last round”
    Tier 2 (conditional): players whose bench_count is noticeably above session avg are forced into PLAY for this round
    Tier 3 (gentle): grouping functions allow a +1 window/band for those forced players so they can actually be placed
+
+   Extra (this version):
+   - Bench tolerance tightened to 0.5
+   - If bench std dev is high, we temporarily relax band/window (fairnessPressure)
+   - We keep a tiny per-player bias in localStorage so repeat-benched players get nudged up next round
 */
 
 export const MATCH_MODES = { WINDOW: 'window', BAND: 'band' };
@@ -38,11 +43,22 @@ const REMATCH_PENALTY = 1;
 
 // Fairness guards
 const MAX_CONSECUTIVE_BENCH = 1;
-// how far above the average bench_count a player has to be before we “force” them in
-const FAIRNESS_LAG_TOLERANCE = 1;
+// tighter now: if you’re 0.5 benches above average, we try to force you in
+const FAIRNESS_LAG_TOLERANCE = 0.5;
 
-/* ========================= Mode storage ========================= */
+// bench-bias persistence
+const BIAS_KEY = 'flominton_bench_bias_v1';
+const MAX_BIAS = 0.8;               // cap how much boost someone can accumulate
+const DECAY_PLAY  = 0.15;           // how much to reduce bias when someone plays
+const BOOST_BENCH = 0.25;           // how much to increase bias when someone benches
+
+/* ========================= Mode + pressure storage ========================= */
 let currentMode = safeGetLocal('match_mode') || MATCH_MODES.WINDOW;
+
+// fairnessPressure is set during selectPlayersForRound (when we detect bench spread)
+// and read later during grouping to allow slightly wider bands/windows
+let fairnessPressure = 0;           // 0 = normal, 1 = slightly loosen, 2 = loosen more
+let fairnessPressureRounds = 0;     // countdown for how long to keep it
 
 export function setMatchMode(mode) {
   currentMode = mode === MATCH_MODES.BAND ? MATCH_MODES.BAND : MATCH_MODES.WINDOW;
@@ -59,6 +75,22 @@ function safeSetLocal(k, v) {
   try { localStorage.setItem(k, v); } catch {}
 }
 
+/* ========================= bias helpers ========================= */
+function loadBiasMap() {
+  try {
+    const raw = localStorage.getItem(BIAS_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) || {};
+  } catch {
+    return {};
+  }
+}
+function saveBiasMap(map) {
+  try {
+    localStorage.setItem(BIAS_KEY, JSON.stringify(map));
+  } catch {}
+}
+
 /* ========================= Utilities ========================= */
 const by = (fn) => (a, b) => {
   const x = fn(a), y = fn(b);
@@ -70,6 +102,12 @@ function chunk(arr, n) {
   const out = [];
   for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
   return out;
+}
+function stddev(arr) {
+  if (!arr.length) return 0;
+  const mean = arr.reduce((s, x) => s + x, 0) / arr.length;
+  const v = arr.reduce((s, x) => s + (x - mean) * (x - mean), 0) / arr.length;
+  return Math.sqrt(v);
 }
 
 /* ========================= Public API ========================= */
@@ -92,15 +130,19 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   const NEED = Math.min(total - (total % 4), maxSlots);
   if (NEED <= 0) return { playing: [], benched: present.slice() };
 
+  const biasMap = loadBiasMap();
+
   // ---- Tier 1: base fairness ordering ----
-  // IMPORTANT: sort DESC by (bench_count + debt)
+  // IMPORTANT: sort DESC by (bench_count + debt + bias)
   const ranked = present.slice().sort((a, b) => {
     const benchA = a.bench_count || 0;
     const benchB = b.bench_count || 0;
     const debtA  = lastRoundBenched?.has(a.id) ? 0.5 : 0;
     const debtB  = lastRoundBenched?.has(b.id) ? 0.5 : 0;
-    const scoreA = benchA + debtA;
-    const scoreB = benchB + debtB;
+    const biasA  = biasMap[a.id] || 0;
+    const biasB  = biasMap[b.id] || 0;
+    const scoreA = benchA + debtA + biasA;
+    const scoreB = benchB + debtB + biasB;
 
     // higher score (more benched) should come FIRST
     if (scoreA !== scoreB) return scoreB - scoreA;
@@ -116,6 +158,27 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
   // average bench to detect lagging players
   const benchCounts = present.map(p => p.bench_count || 0);
   const avgBench = benchCounts.reduce((s, x) => s + x, 0) / benchCounts.length;
+  const sdBench = stddev(benchCounts);
+
+  // ---- dynamic skill expansion trigger ----
+  // if fairness is getting worse, relax for the next 2 rounds
+  if (sdBench > 2.0) {
+    fairnessPressure = 2;
+    fairnessPressureRounds = 2;
+  } else if (sdBench > 1.5) {
+    fairnessPressure = 1;
+    fairnessPressureRounds = 1;
+  } else {
+    // if it’s good, decay existing pressure
+    if (fairnessPressureRounds > 0) {
+      fairnessPressureRounds -= 1;
+      if (fairnessPressureRounds <= 0) {
+        fairnessPressure = 0;
+      }
+    } else {
+      fairnessPressure = 0;
+    }
+  }
 
   // ---- Tier 2: force-in players who are clearly behind ----
   const laggingIds = new Set(
@@ -161,12 +224,31 @@ export function selectPlayersForRound(present, roundNumber, lastRoundBenched = n
     }
   }
 
+  // ---- micro bench quota equalizer (persisted) ----
+  // bump benched players, decay playing players
+  for (const p of benched) {
+    const cur = biasMap[p.id] || 0;
+    const next = Math.min(MAX_BIAS, cur + BOOST_BENCH);
+    biasMap[p.id] = next;
+  }
+  for (const p of playing) {
+    const cur = biasMap[p.id] || 0;
+    const next = Math.max(0, cur - DECAY_PLAY);
+    if (next === 0) {
+      delete biasMap[p.id];
+    } else {
+      biasMap[p.id] = next;
+    }
+  }
+  saveBiasMap(biasMap);
+
   return { playing, benched };
 }
 
 /**
  * Build matches from selected players using the active mode.
  * Players with _mustPlay=true are allowed a slightly wider band/window during grouping.
+ * We also respect fairnessPressure coming from the selector.
  *
  * @param {Array} players - length divisible by 4
  * @param {Map<string, Array<number>>} teammateHistory
@@ -180,9 +262,9 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
 
   let groups = [];
   if (currentMode === MATCH_MODES.BAND) {
-    groups = makeGroupsBand(sorted, totalCourts);
+    groups = makeGroupsBand(sorted, totalCourts, fairnessPressure);
   } else {
-    groups = makeGroupsWindow(sorted, totalCourts);
+    groups = makeGroupsWindow(sorted, totalCourts, fairnessPressure);
   }
 
   // if grouping couldn’t make all courts, fall back to a chunk that
@@ -226,15 +308,16 @@ export function buildMatchesFrom16(players, teammateHistory = new Map(), courtsC
 /* ========================= Grouping algorithms ========================= */
 
 // WINDOW MODE
-function makeGroupsWindow(sortedPlayers, courtCount) {
-  for (let window = START_SKILL_WINDOW; window <= MAX_SKILL_WINDOW; window++) {
-    const groups = greedyWindowGroups(sortedPlayers, courtCount, window);
+function makeGroupsWindow(sortedPlayers, courtCount, pressure = 0) {
+  const extra = Math.min(pressure, 2); // don’t blow it out
+  for (let window = START_SKILL_WINDOW; window <= MAX_SKILL_WINDOW + extra; window++) {
+    const groups = greedyWindowGroups(sortedPlayers, courtCount, window, extra);
     if (groups.length === courtCount) return groups;
   }
   return [];
 }
 
-function greedyWindowGroups(sortedPlayers, courtCount, window) {
+function greedyWindowGroups(sortedPlayers, courtCount, window, pressureExtra = 0) {
   const used = new Set();
   const groups = [];
 
@@ -254,6 +337,8 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
       const allowExtra = root._mustPlay || candidate._mustPlay;
       if (s - minSkill <= window + (allowExtra ? 1 : 0)) {
         pickIdx.push(j);
+      } else if (pressureExtra > 0 && s - minSkill <= window + pressureExtra) {
+        pickIdx.push(j);
       } else {
         break;
       }
@@ -266,6 +351,8 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
       const s = candidate.skill_level;
       const allowExtra = root._mustPlay || candidate._mustPlay;
       if (s - minSkill <= window + (allowExtra ? 1 : 0)) {
+        pickIdx.push(j);
+      } else if (pressureExtra > 0 && s - minSkill <= window + pressureExtra) {
         pickIdx.push(j);
       }
     }
@@ -282,16 +369,17 @@ function greedyWindowGroups(sortedPlayers, courtCount, window) {
 }
 
 // BAND MODE
-function makeGroupsBand(sortedPlayers, courtCount) {
+function makeGroupsBand(sortedPlayers, courtCount, pressure = 0) {
   const withBand = sortedPlayers.map(p => ({ ...p, _band: bandOf(p.skill_level) }));
-  for (let bandWindow = 0; bandWindow <= MAX_BAND_EXPANSION; bandWindow++) {
-    const groups = greedyBandGroups(withBand, courtCount, bandWindow);
+  const extra = Math.min(pressure, 2);
+  for (let bandWindow = 0; bandWindow <= MAX_BAND_EXPANSION + extra; bandWindow++) {
+    const groups = greedyBandGroups(withBand, courtCount, bandWindow, extra);
     if (groups.length === courtCount) return groups;
   }
   return [];
 }
 
-function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
+function greedyBandGroups(playersWithBand, courtCount, bandWindow, pressureExtra = 0) {
   const used = new Set();
   const groups = [];
 
@@ -311,6 +399,8 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
       const allowExtra = root._mustPlay || candidate._mustPlay;
       if (Math.abs(bj - minBand) <= bandWindow + (allowExtra ? 1 : 0)) {
         pickIdx.push(j);
+      } else if (pressureExtra > 0 && Math.abs(bj - minBand) <= bandWindow + pressureExtra) {
+        pickIdx.push(j);
       } else if (bj - minBand > bandWindow + 1) {
         break;
       }
@@ -323,6 +413,8 @@ function greedyBandGroups(playersWithBand, courtCount, bandWindow) {
       const bj = candidate._band;
       const allowExtra = root._mustPlay || candidate._mustPlay;
       if (Math.abs(bj - minBand) <= bandWindow + (allowExtra ? 1 : 0)) {
+        pickIdx.push(j);
+      } else if (pressureExtra > 0 && Math.abs(bj - minBand) <= bandWindow + pressureExtra) {
         pickIdx.push(j);
       }
     }
