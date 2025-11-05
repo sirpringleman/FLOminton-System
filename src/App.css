@@ -173,3 +173,60 @@ a, button{ user-select:none; }
   .toolbar{ flex-direction:column; gap:10px; align-items:flex-start; }
   .toolbar-left{ flex-wrap:wrap; }
 }
+
+.club-gate {
+  position: fixed;
+  inset: 0;
+  background: rgba(7, 10, 16, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.club-gate-card {
+  background: #111827;
+  padding: 28px 32px;
+  border-radius: 16px;
+  width: 320px;
+  text-align: center;
+  box-shadow: 0 20px 35px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.club-gate-card h2 {
+  margin-bottom: 8px;
+}
+
+.club-gate-card p {
+  margin-bottom: 14px;
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.club-gate-card input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0f1420;
+  color: #fff;
+  margin-bottom: 10px;
+}
+
+.club-gate-card button {
+  width: 100%;
+  background: #2563eb;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.club-gate-card .error {
+  margin-top: 6px;
+  color: #f43f5e;
+  font-size: 0.75rem;
+}
