@@ -1022,4 +1022,3 @@ export default function App() {
   function getInitialView() {
     return 'home';
   }
-  
