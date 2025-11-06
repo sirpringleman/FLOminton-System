@@ -113,6 +113,7 @@ function useBeep(volumeRef) {
 }
 
 export default function App() {
+  // club gate
   const [club, setClub] = useState(() => {
     try {
       return sessionStorage.getItem('club_code') || '';
@@ -121,6 +122,7 @@ export default function App() {
     }
   });
 
+  // main state
   const [players, setPlayers] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -156,6 +158,7 @@ export default function App() {
   const lastRoundBenched = useRef(new Set());
   const teammateHistory = useRef(new Map());
 
+  // session stats
   const [sessionStats, setSessionStats] = useState(() => new Map());
   const [diag, setDiag] = useState({
     roundBuildTimes: [],
@@ -164,6 +167,7 @@ export default function App() {
     spanPerMatch: [],
     outOfBandCounts: [],
   });
+
   const [summaryPayload, setSummaryPayload] = useState(null);
 
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
@@ -172,6 +176,7 @@ export default function App() {
   const present = useMemo(() => players.filter((p) => p.is_present), [players]);
   const notPresent = useMemo(() => players.filter((p) => !p.is_present), [players]);
 
+  // load players for club
   useEffect(() => {
     if (!club) return;
     (async () => {
@@ -188,6 +193,7 @@ export default function App() {
     })();
   }, [club]);
 
+  // timer utils
   function clearTick() {
     if (tickRef.current) {
       clearInterval(tickRef.current);
@@ -246,6 +252,7 @@ export default function App() {
     setRunning(false);
   }
 
+  // build next round
   async function buildNextRoundInternal() {
     const nextRound = roundRef.current + 1;
     roundRef.current = nextRound;
@@ -280,6 +287,7 @@ export default function App() {
       outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
     }));
 
+    // per-player stats
     setSessionStats((prev) => {
       const next = new Map(prev);
       playing.forEach((p) => {
@@ -312,6 +320,7 @@ export default function App() {
       return next;
     });
 
+    // persist
     try {
       const updates = [];
       playing.forEach((p) => {
@@ -328,6 +337,7 @@ export default function App() {
     }
   }
 
+  // end night
   async function endNight() {
     const snapshotPlayers = players.map((p) => ({ ...p }));
     const sessionRows = Array.from(sessionStats.values()).map((r) => ({
@@ -388,6 +398,7 @@ export default function App() {
     setView('home');
   }
 
+  // toggles
   async function togglePresent(p) {
     const nv = !p.is_present;
     setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, is_present: nv } : x)));
@@ -449,13 +460,13 @@ export default function App() {
     setShowAdminModal(false);
   }
 
-  if (!club) {
-    return <ClubGate onSelect={setClub} />;
-  }
-
   const isHome = view === 'home';
   const isSession = view === 'session';
   const isDisplay = view === 'display';
+
+  if (!club) {
+    return <ClubGate onSelect={setClub} />;
+  }
 
   return (
     <div className="app-shell">
@@ -555,7 +566,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* COURTS */}
           <div className="courts">
             {matches.map((m) => (
               <div key={m.court} className="court-card">
@@ -569,30 +579,19 @@ export default function App() {
                 </div>
                 <div className="team-row">
                   {m.team1.map((p) => (
-                    <PlayerChip
-                      key={p.id}
-                      player={p}
-                      showSkill={isAdmin}
-                      showBench={isAdmin}
-                    />
+                    <PlayerChip key={p.id} player={p} showSkill={isAdmin} showBench={isAdmin} />
                   ))}
                 </div>
                 <div className="net-divider" />
                 <div className="team-row">
                   {m.team2.map((p) => (
-                    <PlayerChip
-                      key={p.id}
-                      player={p}
-                      showSkill={isAdmin}
-                      showBench={isAdmin}
-                    />
+                    <PlayerChip key={p.id} player={p} showSkill={isAdmin} showBench={isAdmin} />
                   ))}
                 </div>
               </div>
             ))}
           </div>
 
-          {/* BENCHED */}
           <div className="bench-strip">
             <h3>Benched Players</h3>
             <div className="bench-list">
@@ -602,7 +601,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* LISTS */}
           <div className="lists-row">
             <div className="list-panel">
               <div className="panel-head">
@@ -704,7 +702,6 @@ export default function App() {
         </div>
       )}
 
-      {/* SETTINGS MODAL */}
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
@@ -741,7 +738,6 @@ export default function App() {
         />
       )}
 
-      {/* ADMIN LOGIN MODAL */}
       {showAdminModal && (
         <AdminModal
           onClose={() => setShowAdminModal(false)}
@@ -749,7 +745,6 @@ export default function App() {
         />
       )}
 
-      {/* ADD PLAYER MODAL */}
       {showAddPlayerModal && (
         <AddPlayerModal
           onClose={() => setShowAddPlayerModal(false)}
@@ -759,7 +754,6 @@ export default function App() {
         />
       )}
 
-      {/* SUMMARY / DIAGNOSTICS MODAL — defined in part 3 */}
       {showSummary && summaryPayload && (
         <RundownModal
           onClose={() => setShowSummary(false)}
@@ -770,9 +764,8 @@ export default function App() {
   );
 }
 
-/* =========================================================
-   SMALL COMPONENTS
-   ========================================================= */
+// components
+
 function PlayerChip({ player, showSkill, showBench }) {
   return (
     <span className={`player-chip ${player.gender === 'F' ? 'f' : 'm'}`}>
@@ -816,7 +809,6 @@ function ClubGate({ onSelect }) {
   );
 }
 
-/* SETTINGS MODAL */
 function SettingsModal({
   onClose,
   onSave,
@@ -914,7 +906,6 @@ function SettingsModal({
   );
 }
 
-/* ADMIN MODAL */
 function AdminModal({ onClose, onSubmit }) {
   const [pwd, setPwd] = useState('');
   return (
@@ -941,7 +932,6 @@ function AdminModal({ onClose, onSubmit }) {
   );
 }
 
-/* ADD PLAYER MODAL */
 function AddPlayerModal({ onClose, onSubmit, defaultGender = 'M', club }) {
   const [name, setName] = useState('');
   const [gender, setGender] = useState(defaultGender);
@@ -998,267 +988,259 @@ function AddPlayerModal({ onClose, onSubmit, defaultGender = 'M', club }) {
   );
 }
 
-/* =========================================================
-   SMART SESSION SUMMARY + SYSTEM DIAGNOSTICS (tabbed)
-   ========================================================= */
-   function RundownModal({ onClose, payload }) {
-    const [tab, setTab] = useState('summary'); // summary | diag
-  
-    const rounds = payload?.rounds || 0;
-    const sessionRows = Array.isArray(payload?.sessionRows) ? payload.sessionRows : [];
-    const diag = payload?.diag || {
-      roundBuildTimes: [],
-      usedCourts: [],
-      teamImbalances: [],
-      spanPerMatch: [],
-      outOfBandCounts: [],
+function RundownModal({ onClose, payload }) {
+  const [tab, setTab] = useState('summary');
+
+  const rounds = payload?.rounds || 0;
+  const sessionRows = Array.isArray(payload?.sessionRows) ? payload.sessionRows : [];
+  const diag = payload?.diag || {
+    roundBuildTimes: [],
+    usedCourts: [],
+    teamImbalances: [],
+    spanPerMatch: [],
+    outOfBandCounts: [],
+  };
+  const players = Array.isArray(payload?.players) ? payload.players : [];
+
+  const perPlayer = players.map((p) => {
+    const s = sessionRows.find((r) => r.id === p.id);
+    return {
+      id: p.id,
+      name: p.name,
+      gender: p.gender,
+      skill_level: p.skill_level,
+      played: s ? s.played : 0,
+      benched: s ? s.benched : 0,
+      worstBenchStreak: s ? s.worstBenchStreak : 0,
+      teammates: s ? s.teammates : [],
+      opponents: s ? s.opponents : [],
     };
-    const players = Array.isArray(payload?.players) ? payload.players : [];
-  
-    // ensure everyone present shows up, even if never played
-    const perPlayer = players.map((p) => {
-      const s = sessionRows.find((r) => r.id === p.id);
-      return {
-        id: p.id,
-        name: p.name,
-        gender: p.gender,
-        skill_level: p.skill_level,
-        played: s ? s.played : 0,
-        benched: s ? s.benched : 0,
-        worstBenchStreak: s ? s.worstBenchStreak : 0,
-        teammates: s ? s.teammates : [],
-        opponents: s ? s.opponents : [],
-      };
-    });
-  
-    const totalPlayers = perPlayer.length;
-    const mostPlayed = [...perPlayer].sort((a, b) => b.played - a.played)[0] || null;
-    const leastPlayed = [...perPlayer].sort((a, b) => a.played - b.played)[0] || null;
-    const mostBenched = [...perPlayer].sort((a, b) => b.benched - a.benched)[0] || null;
-    const worstStreak = [...perPlayer].sort((a, b) => b.worstBenchStreak - a.worstBenchStreak)[0] || null;
-  
-    const avgBuild = diag.roundBuildTimes.length ? Math.round(avg(diag.roundBuildTimes)) : 0;
-    const avgCourts = diag.usedCourts.length ? avg(diag.usedCourts).toFixed(2) : '—';
-    const avgImbalance = diag.teamImbalances.length ? avg(diag.teamImbalances).toFixed(2) : '—';
-    const avgSpan = diag.spanPerMatch.length ? avg(diag.spanPerMatch).toFixed(2) : '—';
-    const totalOutOfBand = diag.outOfBandCounts.reduce((s, x) => s + x, 0);
-  
-    return (
-      <div className="modal-backdrop opaque">
-        <div className="modal wide">
-          <div className="modal-head">
-            <h3>Session Overview</h3>
-            <button className="btn" onClick={onClose}>
-              ✕
-            </button>
-          </div>
-  
-          <div className="tabs">
-            <button
-              className={tab === 'summary' ? 'tab active' : 'tab'}
-              onClick={() => setTab('summary')}
-            >
-              Smart Session Summary
-            </button>
-            <button
-              className={tab === 'diag' ? 'tab active' : 'tab'}
-              onClick={() => setTab('diag')}
-            >
-              System Diagnostics
-            </button>
-          </div>
-  
-          {tab === 'summary' && (
-            <>
-              <div className="summary-grid">
-                <div className="summary-card">
-                  <div className="label">Rounds played</div>
-                  <div className="value big">{rounds}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Players present</div>
-                  <div className="value big">{totalPlayers}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Avg courts used</div>
-                  <div className="value">{avgCourts}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Most played</div>
-                  <div className="value">
-                    {mostPlayed ? `${mostPlayed.name} (${mostPlayed.played})` : '—'}
-                  </div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Least played</div>
-                  <div className="value">
-                    {leastPlayed ? `${leastPlayed.name} (${leastPlayed.played})` : '—'}
-                  </div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Most benched</div>
-                  <div className="value">
-                    {mostBenched ? `${mostBenched.name} (${mostBenched.benched})` : '—'}
-                  </div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Worst bench streak</div>
-                  <div className="value">
-                    {worstStreak ? `${worstStreak.name} (${worstStreak.worstBenchStreak})` : '—'}
-                  </div>
+  });
+
+  const totalPlayers = perPlayer.length;
+  const mostPlayed = [...perPlayer].sort((a, b) => b.played - a.played)[0] || null;
+  const leastPlayed = [...perPlayer].sort((a, b) => a.played - b.played)[0] || null;
+  const mostBenched = [...perPlayer].sort((a, b) => b.benched - a.benched)[0] || null;
+  const worstStreak = [...perPlayer].sort((a, b) => b.worstBenchStreak - a.worstBenchStreak)[0] || null;
+
+  const avgBuild = diag.roundBuildTimes.length ? Math.round(avg(diag.roundBuildTimes)) : 0;
+  const avgCourts = diag.usedCourts.length ? avg(diag.usedCourts).toFixed(2) : '—';
+  const avgImbalance = diag.teamImbalances.length ? avg(diag.teamImbalances).toFixed(2) : '—';
+  const avgSpan = diag.spanPerMatch.length ? avg(diag.spanPerMatch).toFixed(2) : '—';
+  const totalOutOfBand = diag.outOfBandCounts.reduce((s, x) => s + x, 0);
+
+  return (
+    <div className="modal-backdrop opaque">
+      <div className="modal wide">
+        <div className="modal-head">
+          <h3>Session Overview</h3>
+          <button className="btn" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div className="tabs">
+          <button
+            className={tab === 'summary' ? 'tab active' : 'tab'}
+            onClick={() => setTab('summary')}
+          >
+            Smart Session Summary
+          </button>
+          <button
+            className={tab === 'diag' ? 'tab active' : 'tab'}
+            onClick={() => setTab('diag')}
+          >
+            System Diagnostics
+          </button>
+        </div>
+
+        {tab === 'summary' && (
+          <>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <div className="label">Rounds played</div>
+                <div className="value big">{rounds}</div>
+              </div>
+              <div className="summary-card">
+                <div className="label">Players present</div>
+                <div className="value big">{totalPlayers}</div>
+              </div>
+              <div className="summary-card">
+                <div className="label">Avg courts used</div>
+                <div className="value">{avgCourts}</div>
+              </div>
+              <div className="summary-card">
+                <div className="label">Most played</div>
+                <div className="value">
+                  {mostPlayed ? `${mostPlayed.name} (${mostPlayed.played})` : '—'}
                 </div>
               </div>
-  
-              <h4 style={{ marginTop: '14px' }}>Per-player breakdown</h4>
-              <div className="table-wrap" style={{ maxHeight: '220px' }}>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Lvl</th>
-                      <th>Played</th>
-                      <th>Benched</th>
-                      <th>Worst bench streak</th>
-                      <th>Unique teammates</th>
-                      <th>Unique opponents</th>
+              <div className="summary-card">
+                <div className="label">Least played</div>
+                <div className="value">
+                  {leastPlayed ? `${leastPlayed.name} (${leastPlayed.played})` : '—'}
+                </div>
+              </div>
+              <div className="summary-card">
+                <div className="label">Most benched</div>
+                <div className="value">
+                  {mostBenched ? `${mostBenched.name} (${mostBenched.benched})` : '—'}
+                </div>
+              </div>
+              <div className="summary-card">
+                <div className="label">Worst bench streak</div>
+                <div className="value">
+                  {worstStreak ? `${worstStreak.name} (${worstStreak.worstBenchStreak})` : '—'}
+                </div>
+              </div>
+            </div>
+
+            <h4 style={{ marginTop: '14px' }}>Per-player breakdown</h4>
+            <div className="table-wrap" style={{ maxHeight: '220px' }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Lvl</th>
+                    <th>Played</th>
+                    <th>Benched</th>
+                    <th>Worst bench streak</th>
+                    <th>Unique teammates</th>
+                    <th>Unique opponents</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perPlayer.map((p) => (
+                    <tr key={p.id}>
+                      <td>{p.name}</td>
+                      <td>{p.skill_level}</td>
+                      <td>{p.played}</td>
+                      <td>{p.benched}</td>
+                      <td>{p.worstBenchStreak}</td>
+                      <td>{p.teammates ? p.teammates.length : 0}</td>
+                      <td>{p.opponents ? p.opponents.length : 0}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {perPlayer.map((p) => (
-                      <tr key={p.id}>
-                        <td>{p.name}</td>
-                        <td>{p.skill_level}</td>
-                        <td>{p.played}</td>
-                        <td>{p.benched}</td>
-                        <td>{p.worstBenchStreak}</td>
-                        <td>{p.teammates ? p.teammates.length : 0}</td>
-                        <td>{p.opponents ? p.opponents.length : 0}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        {tab === 'diag' && (
+          <>
+            <div className="summary-grid">
+              <div className="summary-card">
+                <div className="label">Avg build time</div>
+                <div className="value">{avgBuild ? `${avgBuild} ms` : '—'}</div>
               </div>
-            </>
-          )}
-  
-          {tab === 'diag' && (
-            <>
-              <div className="summary-grid">
-                <div className="summary-card">
-                  <div className="label">Avg build time</div>
-                  <div className="value">{avgBuild ? `${avgBuild} ms` : '—'}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Avg team imbalance</div>
-                  <div className="value">{avgImbalance}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Avg skill span / match</div>
-                  <div className="value">{avgSpan}</div>
-                </div>
-                <div className="summary-card">
-                  <div className="label">Out-of-band groups</div>
-                  <div className="value">{totalOutOfBand}</div>
-                </div>
+              <div className="summary-card">
+                <div className="label">Avg team imbalance</div>
+                <div className="value">{avgImbalance}</div>
               </div>
-  
-              <div className="diag-rows">
-                <div>
-                  <h5>Courts used per round</h5>
-                  <p className="muted">{diag.usedCourts.join(', ') || '—'}</p>
-                </div>
-                <div>
-                  <h5>Build times (ms)</h5>
-                  <p className="muted">{diag.roundBuildTimes.join(', ') || '—'}</p>
-                </div>
-                <div>
-                  <h5>Imbalance (|avg1-avg2|)</h5>
-                  <p className="muted">{diag.teamImbalances.join(', ') || '—'}</p>
-                </div>
-                <div>
-                  <h5>Skill span per match</h5>
-                  <p className="muted">{diag.spanPerMatch.join(', ') || '—'}</p>
-                </div>
+              <div className="summary-card">
+                <div className="label">Avg skill span / match</div>
+                <div className="value">{avgSpan}</div>
               </div>
-            </>
-          )}
-  
-          <div className="modal-actions" style={{ marginTop: '18px' }}>
-            <button className="btn primary" onClick={onClose}>
-              Close
-            </button>
-          </div>
+              <div className="summary-card">
+                <div className="label">Out-of-band groups</div>
+                <div className="value">{totalOutOfBand}</div>
+              </div>
+            </div>
+
+            <div className="diag-rows">
+              <div>
+                <h5>Courts used per round</h5>
+                <p className="muted">{diag.usedCourts.join(', ') || '—'}</p>
+              </div>
+              <div>
+                <h5>Build times (ms)</h5>
+                <p className="muted">{diag.roundBuildTimes.join(', ') || '—'}</p>
+              </div>
+              <div>
+                <h5>Imbalance (|avg1-avg2|)</h5>
+                <p className="muted">{diag.teamImbalances.join(', ') || '—'}</p>
+              </div>
+              <div>
+                <h5>Skill span per match</h5>
+                <p className="muted">{diag.spanPerMatch.join(', ') || '—'}</p>
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="modal-actions" style={{ marginTop: '18px' }}>
+          <button className="btn primary" onClick={onClose}>
+            Close
+          </button>
         </div>
       </div>
-    );
-  }
-  
-  /* =========================================================
-     helpers
-     ========================================================= */
-  function makeEmptySessionRow(id, name, skill, gender) {
+    </div>
+  );
+}
+
+function makeEmptySessionRow(id, name, skill, gender) {
+  return {
+    id,
+    name,
+    gender,
+    skill_level: skill,
+    played: 0,
+    benched: 0,
+    worstBenchStreak: 0,
+    currentBenchStreak: 0,
+    currentBenchGap: 0,
+    benchGaps: [],
+    teammates: new Set(),
+    opponents: new Set(),
+  };
+}
+
+function addTeammateOpponent(map, id, teammates = [], opponents = []) {
+  const cur = map.get(id);
+  if (!cur) return;
+  teammates.forEach((t) => cur.teammates.add(t.id || t));
+  opponents.forEach((o) => cur.opponents.add(o.id || o));
+}
+
+function avg(arr) {
+  if (!arr || !arr.length) return 0;
+  return arr.reduce((s, x) => s + x, 0) / arr.length;
+}
+
+function computeDiagnostics(matches) {
+  if (!matches || !matches.length) {
     return {
-      id,
-      name,
-      gender,
-      skill_level: skill,
-      played: 0,
-      benched: 0,
-      worstBenchStreak: 0,
-      currentBenchStreak: 0,
-      currentBenchGap: 0,
-      benchGaps: [],
-      teammates: new Set(),
-      opponents: new Set(),
+      avgImbalance: 0,
+      avgSpan: 0,
+      outOfBand: 0,
     };
   }
-  
-  function addTeammateOpponent(map, id, teammates = [], opponents = []) {
-    const cur = map.get(id);
-    if (!cur) return;
-    teammates.forEach((t) => cur.teammates.add(t.id || t));
-    opponents.forEach((o) => cur.opponents.add(o.id || o));
-  }
-  
-  function avg(arr) {
-    if (!arr || !arr.length) return 0;
-    return arr.reduce((s, x) => s + x, 0) / arr.length;
-  }
-  
-  function computeDiagnostics(matches) {
-    if (!matches || !matches.length) {
-      return {
-        avgImbalance: 0,
-        avgSpan: 0,
-        outOfBand: 0,
-      };
-    }
-    let imbalances = [];
-    let spans = [];
-    let outOfBand = 0;
-    matches.forEach((m) => {
-      const span =
-        Math.max(
-          m.team1[0].skill_level,
-          m.team1[1].skill_level,
-          m.team2[0].skill_level,
-          m.team2[1].skill_level
-        ) -
-        Math.min(
-          m.team1[0].skill_level,
-          m.team1[1].skill_level,
-          m.team2[0].skill_level,
-          m.team2[1].skill_level
-        );
-      spans.push(span);
-      const imb = Math.abs(m.avg1 - m.avg2);
-      imbalances.push(imb);
-      if (span > 5) outOfBand += 1;
-    });
-    return {
-      avgImbalance: avg(imbalances),
-      avgSpan: avg(spans),
-      outOfBand,
-    };
-  }
-  
+  let imbalances = [];
+  let spans = [];
+  let outOfBand = 0;
+  matches.forEach((m) => {
+    const span =
+      Math.max(
+        m.team1[0].skill_level,
+        m.team1[1].skill_level,
+        m.team2[0].skill_level,
+        m.team2[1].skill_level
+      ) -
+      Math.min(
+        m.team1[0].skill_level,
+        m.team1[1].skill_level,
+        m.team2[0].skill_level,
+        m.team2[1].skill_level
+      );
+    spans.push(span);
+    const imb = Math.abs(m.avg1 - m.avg2);
+    imbalances.push(imb);
+    if (span > 5) outOfBand += 1;
+  });
+  return {
+    avgImbalance: avg(imbalances),
+    avgSpan: avg(spans),
+    outOfBand,
+  };
+}
