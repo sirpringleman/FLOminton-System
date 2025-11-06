@@ -433,6 +433,12 @@ button.full{
   flex-wrap:wrap;
 }
 
+/* force 2x2 layout for display courts */
+.display-courts{
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+}
+
+
 /* club gate */
 .club-gate{
   height:100vh;
