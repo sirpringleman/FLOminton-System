@@ -2,6 +2,7 @@
 // Tolerates BOTH shapes:
 //   { updates: [ { id, fields: { is_present: true } } ] }
 //   { updates: [ { id, is_present: true } ] }
+// Now also supports multi-tenant via ?club=ABC and body.club_code on POST.
 
 import { createClient } from '@supabase/supabase-js'
 
@@ -35,10 +36,20 @@ export default async (req, ctx) => {
 
     /* ======================= GET ======================= */
     if (method === 'GET') {
-      const { data, error } = await supabase
-        .from('players')
-        .select('*')
-        .order('name', { ascending: true })
+      // read ?club=ABC
+      const u = new URL(req.url)
+      const club = u.searchParams.get('club')
+
+      let query = supabase.from('players').select('*').order('name', { ascending: true })
+      if (club) {
+        query = supabase
+          .from('players')
+          .select('*')
+          .eq('club_code', club)
+          .order('name', { ascending: true })
+      }
+
+      const { data, error } = await query
 
       if (error) {
         console.error('[players][GET]', error)
@@ -69,12 +80,10 @@ export default async (req, ctx) => {
         if (u.fields && typeof u.fields === 'object') {
           fields = u.fields
         } else {
-          // copy all props except id/fields into fields
           const { id, fields: _ignored, ...rest } = u
           fields = rest
         }
 
-        // if still no fields, skip
         if (!fields || Object.keys(fields).length === 0) {
           console.warn('[players][PATCH] no fields for id', u.id)
           continue
@@ -85,7 +94,7 @@ export default async (req, ctx) => {
           .update(fields)
           .eq('id', u.id)
           .select()
-          .maybeSingle() // tolerate 0 rows
+          .maybeSingle()
         if (error) {
           console.error('[players][PATCH] update failed:', {
             id: u.id,
@@ -109,9 +118,18 @@ export default async (req, ctx) => {
     if (method === 'POST') {
       let body = {}
       try { body = await req.json() } catch {}
-      const players = Array.isArray(body?.players) ? body.players : []
+      const clubCode = body?.club_code || null
+      let players = Array.isArray(body?.players) ? body.players : []
       if (!players.length) {
         return J(400, { error: 'No players provided' })
+      }
+
+      // force club_code if provided in body so each club has its own roster
+      if (clubCode) {
+        players = players.map((p) => ({
+          ...p,
+          club_code: p.club_code || clubCode
+        }))
       }
 
       const { data, error } = await supabase
