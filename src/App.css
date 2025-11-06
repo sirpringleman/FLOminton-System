@@ -134,7 +134,7 @@ body{
 .input:focus{ outline:none; border-color:rgba(90,169,255,.5); box-shadow:0 0 0 2px rgba(90,169,255,.18); }
 
 /* Modals */
-.modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,1); display:flex; align-items:center; justify-content:center; z-index:50; }
+.modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.70); display:flex; align-items:center; justify-content:center; z-index:50; }
 .modal{ width:min(100%, 980px); border:1px solid var(--border); border-radius:var(--radius-lg); background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03)); box-shadow:var(--shadow); padding:16px; }
 .two-col{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
 .settings-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
