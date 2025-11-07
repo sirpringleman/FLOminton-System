@@ -1037,183 +1037,141 @@ export default function App() {
    /* =========================================================
    SMART SESSION SUMMARY + SYSTEM DIAGNOSTICS
    ========================================================= */
-function RundownModal({ onClose, payload }) {
-  // payload: { rounds, sessionRows, diag, players }
-  const rounds = payload?.rounds || 0;
-  const sessionRows = Array.isArray(payload?.sessionRows) ? payload.sessionRows : [];
-  const diag = payload?.diag || {
-    roundBuildTimes: [],
-    usedCourts: [],
-    teamImbalances: [],
-    spanPerMatch: [],
-    outOfBandCounts: [],
-  };
-  const players = Array.isArray(payload?.players) ? payload.players : [];
-
-  // build per-player merged view: start from players[] so those who never played also show
-  const perPlayer = players.map((p) => {
-    const s = sessionRows.find((r) => r.id === p.id);
-    return {
-      id: p.id,
-      name: p.name,
-      gender: p.gender,
-      skill_level: p.skill_level,
-      played: s ? s.played : 0,
-      benched: s ? s.benched : 0,
-      worstBenchStreak: s ? s.worstBenchStreak : 0,
-      teammates: s ? s.teammates : [],
-      opponents: s ? s.opponents : [],
+/* =========================================================
+   SMART SESSION SUMMARY + SYSTEM DIAGNOSTICS
+   ========================================================= */
+   function RundownModal({ onClose, payload }) {
+    const [activeTab, setActiveTab] = useState('summary');
+    const rounds = payload?.rounds || 0;
+    const sessionRows = Array.isArray(payload?.sessionRows) ? payload.sessionRows : [];
+    const diag = payload?.diag || {
+      roundBuildTimes: [],
+      usedCourts: [],
+      teamImbalances: [],
+      spanPerMatch: [],
+      outOfBandCounts: [],
     };
-  });
-
-  const totalPlayers = perPlayer.length;
-  const totalMatches = rounds * (diag.usedCourts.length > 0 ? avg(diag.usedCourts) : 0);
-
-  const mostPlayed = [...perPlayer].sort((a, b) => b.played - a.played)[0] || null;
-  const leastPlayed = [...perPlayer].sort((a, b) => a.played - b.played)[0] || null;
-  const mostBenched = [...perPlayer].sort((a, b) => b.benched - a.benched)[0] || null;
-  const worstStreak = [...perPlayer].sort((a, b) => b.worstBenchStreak - a.worstBenchStreak)[0] || null;
-
-  const avgBuild = diag.roundBuildTimes.length ? Math.round(avg(diag.roundBuildTimes)) : 0;
-  const avgCourts = diag.usedCourts.length ? avg(diag.usedCourts).toFixed(2) : '—';
-  const avgImbalance = diag.teamImbalances.length ? avg(diag.teamImbalances).toFixed(2) : '—';
-  const avgSpan = diag.spanPerMatch.length ? avg(diag.spanPerMatch).toFixed(2) : '—';
-  const totalOutOfBand = diag.outOfBandCounts.reduce((s, x) => s + x, 0);
-
-  return (
-    <div className="modal-backdrop">
-      <div className="modal wide">
-        <div className="modal-head">
-          <h3>Session Overview</h3>
-          <button className="btn" onClick={onClose}>
-            ✕
-          </button>
-        </div>
-
-        <div className="tabs">
-          {/* it's a single modal but we show both sections stacked */}
-          <span className="tab active">Smart Session Summary</span>
-          <span className="tab">System Diagnostics</span>
-        </div>
-
-        {/* SUMMARY SECTION */}
-        <div className="summary-grid">
-          <div className="summary-card">
-            <div className="label">Rounds played</div>
-            <div className="value big">{rounds}</div>
+    const players = Array.isArray(payload?.players) ? payload.players : [];
+  
+    const perPlayer = players.map((p) => {
+      const s = sessionRows.find((r) => r.id === p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        gender: p.gender,
+        skill_level: p.skill_level,
+        played: s ? s.played : 0,
+        benched: s ? s.benched : 0,
+        worstBenchStreak: s ? s.worstBenchStreak : 0,
+        teammates: s ? s.teammates : [],
+        opponents: s ? s.opponents : [],
+      };
+    });
+  
+    const totalPlayers = perPlayer.length;
+    const mostPlayed = [...perPlayer].sort((a, b) => b.played - a.played)[0] || null;
+    const leastPlayed = [...perPlayer].sort((a, b) => a.played - b.played)[0] || null;
+    const mostBenched = [...perPlayer].sort((a, b) => b.benched - a.benched)[0] || null;
+    const worstStreak = [...perPlayer].sort((a, b) => b.worstBenchStreak - a.worstBenchStreak)[0] || null;
+  
+    const avgBuild = diag.roundBuildTimes.length ? Math.round(avg(diag.roundBuildTimes)) : 0;
+    const avgCourts = diag.usedCourts.length ? avg(diag.usedCourts).toFixed(2) : '—';
+    const avgImbalance = diag.teamImbalances.length ? avg(diag.teamImbalances).toFixed(2) : '—';
+    const avgSpan = diag.spanPerMatch.length ? avg(diag.spanPerMatch).toFixed(2) : '—';
+    const totalOutOfBand = diag.outOfBandCounts.reduce((s, x) => s + x, 0);
+  
+    return (
+      <div className="modal-backdrop">
+        <div className="modal wide session-modal">
+          <div className="modal-head">
+            <h3>Session Overview</h3>
+            <button className="btn" onClick={onClose}>
+              ✕
+            </button>
           </div>
-          <div className="summary-card">
-            <div className="label">Players present</div>
-            <div className="value big">{totalPlayers}</div>
+  
+          {/* Tabs */}
+          <div className="tabs-row">
+            <button
+              className={activeTab === 'summary' ? 'tab active' : 'tab'}
+              onClick={() => setActiveTab('summary')}
+            >
+              Smart Session Summary
+            </button>
+            <button
+              className={activeTab === 'diagnostics' ? 'tab active' : 'tab'}
+              onClick={() => setActiveTab('diagnostics')}
+            >
+              System Diagnostics
+            </button>
           </div>
-          <div className="summary-card">
-            <div className="label">Avg courts used</div>
-            <div className="value">{avgCourts}</div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Most played</div>
-            <div className="value">
-              {mostPlayed ? `${mostPlayed.name} (${mostPlayed.played})` : '—'}
+  
+          {/* Smart Session Summary */}
+          {activeTab === 'summary' && (
+            <div className="summary-tab">
+              <div className="summary-grid">
+                <div className="summary-card"><p className="label">Rounds played</p><p className="value">{rounds}</p></div>
+                <div className="summary-card"><p className="label">Players present</p><p className="value">{totalPlayers}</p></div>
+                <div className="summary-card"><p className="label">Avg courts used</p><p className="value">{avgCourts}</p></div>
+                <div className="summary-card"><p className="label">Most played</p><p className="value">{mostPlayed ? `${mostPlayed.name} (${mostPlayed.played})` : '—'}</p></div>
+                <div className="summary-card"><p className="label">Least played</p><p className="value">{leastPlayed ? `${leastPlayed.name} (${leastPlayed.played})` : '—'}</p></div>
+                <div className="summary-card"><p className="label">Most benched</p><p className="value">{mostBenched ? `${mostBenched.name} (${mostBenched.benched})` : '—'}</p></div>
+                <div className="summary-card"><p className="label">Worst bench streak</p><p className="value">{worstStreak ? `${worstStreak.name} (${worstStreak.worstBenchStreak})` : '—'}</p></div>
+              </div>
+  
+              <h4 style={{ marginTop: '16px' }}>Per-player breakdown</h4>
+              <div className="table-wrap" style={{ maxHeight: '260px' }}>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Name</th><th>Lvl</th><th>Played</th><th>Benched</th><th>Worst bench streak</th><th>Unique teammates</th><th>Unique opponents</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {perPlayer.map((p) => (
+                      <tr key={p.id}>
+                        <td>{p.name}</td>
+                        <td>{p.skill_level}</td>
+                        <td>{p.played}</td>
+                        <td>{p.benched}</td>
+                        <td>{p.worstBenchStreak}</td>
+                        <td>{p.teammates ? p.teammates.length : 0}</td>
+                        <td>{p.opponents ? p.opponents.length : 0}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Least played</div>
-            <div className="value">
-              {leastPlayed ? `${leastPlayed.name} (${leastPlayed.played})` : '—'}
+          )}
+  
+          {/* System Diagnostics */}
+          {activeTab === 'diagnostics' && (
+            <div className="diagnostics-tab">
+              <div className="summary-grid">
+                <div className="summary-card"><p className="label">Avg build time</p><p className="value">{avgBuild ? `${avgBuild} ms` : '—'}</p></div>
+                <div className="summary-card"><p className="label">Avg team imbalance</p><p className="value">{avgImbalance}</p></div>
+                <div className="summary-card"><p className="label">Avg skill span / match</p><p className="value">{avgSpan}</p></div>
+                <div className="summary-card"><p className="label">Out-of-band groups</p><p className="value">{totalOutOfBand}</p></div>
+              </div>
+  
+              <div className="diag-rows">
+                <div><h5>Courts used per round</h5><p className="muted">{diag.usedCourts.join(', ') || '—'}</p></div>
+                <div><h5>Build times (ms)</h5><p className="muted">{diag.roundBuildTimes.join(', ') || '—'}</p></div>
+                <div><h5>Imbalance (|avg1-avg2|)</h5><p className="muted">{diag.teamImbalances.join(', ') || '—'}</p></div>
+                <div><h5>Out-of-band players per round</h5><p className="muted">{diag.outOfBandCounts.join(', ') || '—'}</p></div>
+              </div>
             </div>
+          )}
+  
+          <div className="modal-actions" style={{ marginTop: '18px' }}>
+            <button className="btn primary" onClick={onClose}>Close</button>
           </div>
-          <div className="summary-card">
-            <div className="label">Most benched</div>
-            <div className="value">
-              {mostBenched ? `${mostBenched.name} (${mostBenched.benched})` : '—'}
-            </div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Worst bench streak</div>
-            <div className="value">
-              {worstStreak ? `${worstStreak.name} (${worstStreak.worstBenchStreak})` : '—'}
-            </div>
-          </div>
-        </div>
-
-        {/* PER PLAYER TABLE */}
-        <h4 style={{ marginTop: '14px' }}>Per-player breakdown</h4>
-        <div className="table-wrap" style={{ maxHeight: '220px' }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Lvl</th>
-                <th>Played</th>
-                <th>Benched</th>
-                <th>Worst bench streak</th>
-                <th>Unique teammates</th>
-                <th>Unique opponents</th>
-              </tr>
-            </thead>
-            <tbody>
-              {perPlayer.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.name}</td>
-                  <td>{p.skill_level}</td>
-                  <td>{p.played}</td>
-                  <td>{p.benched}</td>
-                  <td>{p.worstBenchStreak}</td>
-                  <td>{p.teammates ? p.teammates.length : 0}</td>
-                  <td>{p.opponents ? p.opponents.length : 0}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* SYSTEM DIAGNOSTICS */}
-        <h4 style={{ marginTop: '16px' }}>System diagnostics</h4>
-        <div className="summary-grid">
-          <div className="summary-card">
-            <div className="label">Avg build time</div>
-            <div className="value">{avgBuild ? `${avgBuild} ms` : '—'}</div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Avg team imbalance</div>
-            <div className="value">{avgImbalance}</div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Avg skill span / match</div>
-            <div className="value">{avgSpan}</div>
-          </div>
-          <div className="summary-card">
-            <div className="label">Out-of-band groups</div>
-            <div className="value">{totalOutOfBand}</div>
-          </div>
-        </div>
-
-        {/* raw sequences */}
-        <div className="diag-rows">
-          <div>
-            <h5>Courts used per round</h5>
-            <p className="muted">{diag.usedCourts.join(', ') || '—'}</p>
-          </div>
-          <div>
-            <h5>Build times (ms)</h5>
-            <p className="muted">{diag.roundBuildTimes.join(', ') || '—'}</p>
-          </div>
-          <div>
-            <h5>Imbalance (|avg1-avg2|)</h5>
-            <p className="muted">{diag.teamImbalances.join(', ') || '—'}</p>
-          </div>
-        </div>
-
-        <div className="modal-actions" style={{ marginTop: '18px' }}>
-          <button className="btn primary" onClick={onClose}>
-            Close
-          </button>
         </div>
       </div>
-    </div>
-  );
-}
-
+    );
+  }
+  
 /* =========================================================
    helpers for session stats
    ========================================================= */
