@@ -479,3 +479,140 @@ button.full{
   .controls-row{ flex-direction:column; align-items:flex-start; }
   .display-top{ flex-wrap:wrap; }
 }
+
+/* =========================================================
+   SMART SESSION SUMMARY + SYSTEM DIAGNOSTICS POLISH
+   ========================================================= */
+
+/* Tabs Row */
+.tabs-row {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin: 12px 0 22px;
+}
+.tab {
+  background: rgba(30, 32, 35, 0.9);
+  color: #aaa;
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-weight: 500;
+  cursor: pointer;
+  transition: 0.25s ease;
+}
+.tab:hover {
+  background: rgba(50, 53, 58, 0.9);
+  color: #fff;
+}
+.tab.active {
+  background: #005eff;
+  color: #fff;
+  border-color: #005eff;
+  box-shadow: 0 0 8px rgba(0, 94, 255, 0.6);
+}
+
+/* Summary Grid */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.summary-card {
+  background: rgba(20, 22, 25, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  padding: 14px 18px;
+  text-align: center;
+  transition: 0.3s ease;
+}
+.summary-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.summary-card .label {
+  font-size: 0.85rem;
+  color: #aaa;
+}
+.summary-card .value {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #fff;
+  margin-top: 4px;
+}
+
+/* Diagnostics Section */
+.diagnostics-tab .diag-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 20px;
+}
+.diagnostics-tab h5 {
+  font-size: 0.9rem;
+  color: #ccc;
+  margin-bottom: 4px;
+}
+.diagnostics-tab p {
+  font-size: 0.95rem;
+  color: #fff;
+  background: rgba(35, 37, 40, 0.6);
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-word;
+}
+
+/* Table polish */
+.table-wrap {
+  overflow-y: auto;
+  background: rgba(20, 22, 25, 0.75);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px;
+}
+.session-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.session-table th,
+.session-table td {
+  padding: 6px 10px;
+  text-align: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #eee;
+}
+.session-table th {
+  background: rgba(255, 255, 255, 0.06);
+  font-weight: 600;
+}
+.session-table tr:hover td {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Modal tweaks for summary/diagnostics */
+.session-modal.wide {
+  width: 90%;
+  max-width: 1200px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.modal-head h3 {
+  font-size: 1.3rem;
+  color: #fff;
+}
+.modal-head .btn {
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 1.4rem;
+  cursor: pointer;
+}
+.modal-head .btn:hover {
+  color: #ff6666;
+}
