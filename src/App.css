@@ -674,3 +674,58 @@ button.full{
   padding: 4px 14px !important;
   line-height: 1.05 !important;
 }
+
+/* ==== Make Display courts use the same visuals as Session courts ==== */
+/* paste at bottom of App.css (after existing display rules) */
+
+.display-court {
+  /* copy session's court-card visual */
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02)); /* matches .court-card */
+  border: 1px solid var(--border, rgba(255,255,255,.03)); /* use your --border var if present */
+  border-radius: var(--radius-lg, 18px);
+  box-shadow: var(--shadow, 0 10px 30px rgba(0,0,0,.25));
+  padding: 12px;    /* same padding as session card */
+  color: inherit;
+  /* ensure auto-height and no forced flex/stretch */
+  height: auto !important;
+  flex: 0 0 auto !important;
+}
+
+/* match the title/avg styles */
+.display-court-title {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  margin-bottom:8px;
+  font-weight:600;
+}
+
+/* ensure net looks the same */
+.display-court .net-divider,
+.display-court .net {
+  height:6px;
+  margin:10px 0;
+  border-radius:3px;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,.38), rgba(255,255,255,0)),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.75) 0 12px, rgba(255,255,255,.25) 12px 24px);
+  box-shadow: 0 0 10px rgba(255,255,255,.12), inset 0 0 2px rgba(0,0,0,.6);
+}
+
+/* team rows copy session team look */
+.display-team-row {
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+  min-height:40px;
+}
+
+/* optionally match the small avg pill */
+.display-court .court-avgs {
+  font-size:12px;
+  color:var(--muted, #97a3b6);
+  background: rgba(255,255,255, .02);
+  padding:4px 8px;
+  border-radius:999px;
+}

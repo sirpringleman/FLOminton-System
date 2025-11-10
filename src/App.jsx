@@ -476,14 +476,25 @@ export default function App() {
       setShowAdminModal(true);
     }
   
-    function handleAdminLogin(pwd) {
-      if (!pwd) return;
-      setAdminKey(pwd);
+    async function handleAdminLogin(inputPassword) {
       try {
-        sessionStorage.setItem('adminKey', pwd);
-      } catch {}
-      setShowAdminModal(false);
-    }
+        const res = await fetch('/.netlify/functions/checkAdmin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: inputPassword })
+        });
+        const json = await res.json();
+        if (json.ok) {
+          setIsAdmin(true);
+          setShowAdminModal(false);
+        } else {
+          alert("Incorrect admin password");
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Error checking admin password");
+      }
+    }    
   
     /* =========================================================
        SWAP HELPERS (now allowed for everyone)
