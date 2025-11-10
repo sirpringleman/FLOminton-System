@@ -409,7 +409,7 @@ button.full{
   display:grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap:14px;
-  flex:1;
+  flex:0;
 }
 .display-court{
   border:1px solid rgba(255,255,255,.03);
