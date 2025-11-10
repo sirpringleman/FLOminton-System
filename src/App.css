@@ -622,35 +622,27 @@ button.full{
   opacity: 0.35;
   filter: grayscale(0.15);
 }
-
 .player-chip.swap-source {
   box-shadow: 0 0 0 3px rgba(255, 180, 70, 0.7);
   opacity: 1;
   z-index: 2;
 }
-
 .player-chip.swap-target {
   outline: 2px dashed rgba(255, 255, 255, 0.35);
   cursor: pointer;
 }
 
 /* === display size fixes (added) === */
-
-/* make the display courts hug content and keep 2x2 when space allows */
 .display-courts {
-  /* keep your existing grid, but prevent over-stretching */
+  /* keep your existing grid but make it content-driven */
   align-items: flex-start;
   grid-auto-rows: auto;
 }
-
-/* display court should not force extra height */
 .display-court {
   height: auto;
 }
-
-/* make display chips large but not overly tall */
 .player-chip.display-chip {
-  font-size: 1.6rem;     /* big for visibility */
-  padding: 4px 14px;     /* slimmer vertically so rows don’t grow too tall */
+  font-size: 1.6rem;
+  padding: 4px 14px;
   line-height: 1.05;
 }
