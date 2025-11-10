@@ -477,22 +477,18 @@ export default function App() {
     }
   
     async function handleAdminLogin(inputPassword) {
-      try {
-        const res = await fetch('/.netlify/functions/checkAdmin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: inputPassword })
-        });
-        const json = await res.json();
-        if (json.ok) {
-          setIsAdmin(true);
-          setShowAdminModal(false);
-        } else {
-          alert("Incorrect admin password");
-        }
-      } catch (err) {
-        console.error(err);
-        alert("Error checking admin password");
+      const res = await fetch('/.netlify/functions/checkAdmin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: inputPassword })
+      });
+    
+      const data = await res.json();
+      if (data.ok) {
+        setIsAdmin(true);
+        setShowAdminModal(false);
+      } else {
+        alert('Incorrect admin password');
       }
     }    
   
