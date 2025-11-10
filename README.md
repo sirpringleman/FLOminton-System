@@ -20,7 +20,7 @@ If you are developing a production application, we recommend using TypeScript wi
 
 LEFT TO DO:
 - UI Improvements                                                             - DONE
-- Function to swap out player on a court with someone sitting out easily
+- Function to swap out player on a court with someone sitting out easily      - DONE
 - Function to block / reduce available courts                                 - DONE
 - Sound Check         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!                      - 
 - Logic fix                                           - DONE (live testing required)
