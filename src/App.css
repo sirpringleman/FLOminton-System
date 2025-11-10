@@ -158,7 +158,7 @@ body{
 .bigtime{ font-size:28px; font-weight:900; color:var(--text); }
 .bigtime.warn{ color:var(--warn); animation:pulse 1s infinite; }
 .display-hint{ font-size:12px; color:var(--muted); }
-.display-courts{ display:grid; gap:14px; grid-template-columns: repeat(2, minmax(420px, 1fr)); }
+.display-courts{ display:grid; gap:14px; grid-template-columns: repeat(2, minmax(280px, 1fr)); }
 
 /* Helpers */
 .glass{ background:var(--glass); backdrop-filter: blur(8px); }
@@ -403,7 +403,7 @@ button.full{
   animation:pulse 1s infinite;
 }
 .big-timer.blink-red{
-  animation:blinkrw .7s steps(2, jump-none) infinite;
+  animation:blinkrw 1s steps(2, jump-none) infinite;
 }
 .display-courts{
   display:grid;

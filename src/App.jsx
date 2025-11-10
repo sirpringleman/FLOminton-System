@@ -221,13 +221,13 @@ export default function App() {
       setTimerLeft((prev) => {
         const next = prev - 1;
         if (next === warnSeconds) {
-          beep(1150, 450);
+          beep(1150, 5000);
         }
         if (next <= 0) {
           clearTick();
           setRunning(false);
           // end-of-round
-          beep(550, 600);
+          beep(550, 5000);
           (async () => {
             await buildNextRoundInternal();
             setTransitionLeft(transitionSeconds);
@@ -250,7 +250,7 @@ export default function App() {
         if (next <= 0) {
           clearTick();
           setRunning(false);
-          beep(850, 450);
+          beep(850, 5000);
           setTimerLeft(timerTotal);
           startRoundTimer();
           return 0;
