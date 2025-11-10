@@ -646,3 +646,31 @@ button.full{
   padding: 4px 14px;
   line-height: 1.05;
 }
+
+/* === DISPLAY MODE HARD OVERRIDES === */
+.display-overlay .display-courts {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(260px, 1fr)) !important; /* tight 2x2 */
+  gap: 10px !important;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  flex: 0 !important;              /* stop stretching down */
+  margin-bottom: 6px !important;    /* pull benched up */
+}
+
+.display-overlay .display-court {
+  height: auto !important;          /* content-driven */
+  max-width: 100% !important;
+  padding: 10px 12px !important;
+}
+
+.display-overlay .display-bench {
+  margin-top: 4px !important;       /* minimal dead space */
+}
+
+/* keep display chips big but not tall */
+.display-overlay .player-chip.display-chip {
+  font-size: 1.6rem !important;
+  padding: 4px 14px !important;
+  line-height: 1.05 !important;
+}
