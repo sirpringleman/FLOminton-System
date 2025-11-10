@@ -70,7 +70,7 @@ body{
 }
 
 /* Courts grid (for canonical earlier version) */
-.courts-grid{ display:grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap:12px; margin-top:8px; }
+.courts-grid{ display:grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap:12px; margin-top:8px; }
 .court{
   border:1px solid var(--border); border-radius:var(--radius-lg);
   background:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
