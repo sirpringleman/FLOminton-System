@@ -480,12 +480,16 @@ export default function App() {
       const res = await fetch('/.netlify/functions/checkAdmin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: inputPassword })
+        body: JSON.stringify({ password: inputPassword }),
       });
     
       const data = await res.json();
       if (data.ok) {
-        setIsAdmin(true);
+        // this is how the rest of the app decides you're admin
+        setAdminKey('admin-ok');
+        try {
+          sessionStorage.setItem('adminKey', 'admin-ok');
+        } catch {}
         setShowAdminModal(false);
       } else {
         alert('Incorrect admin password');
