@@ -498,91 +498,98 @@ export default function App() {
     /* =========================================================
        SWAP HELPERS
        ========================================================= */
-    function handleCourtPlayerClick(courtNo, teamKey, idx, playerObj) {
-      if (!isAdmin) return;
-      if (!benched.length) return;
-      // if already picking this one, cancel
-      if (
-        swapSource &&
-        swapSource.court === courtNo &&
-        swapSource.team === teamKey &&
-        swapSource.index === idx
-      ) {
-        setSwapSource(null);
-        return;
+       function handleCourtPlayerClick(courtNo, teamKey, idx, playerObj) {
+        // allow swap for everyone, but only if there is someone to swap with
+        if (!benched.length) return;
+      
+        // clicking the same one again cancels
+        if (
+          swapSource &&
+          swapSource.court === courtNo &&
+          swapSource.team === teamKey &&
+          swapSource.index === idx
+        ) {
+          setSwapSource(null);
+          return;
+        }
+      
+        setSwapSource({
+          court: courtNo,
+          team: teamKey,
+          index: idx,
+          playerId: playerObj.id,
+        });
       }
-      setSwapSource({
-        court: courtNo,
-        team: teamKey,
-        index: idx,
-        playerId: playerObj.id,
-      });
-    }
-  
-    function handleBenchedClick(benchPlayer) {
-      if (!isAdmin) return;
-      if (!swapSource) return;
-      // perform swap
-      setMatches((prevMatches) => {
-        const cloned = prevMatches.map((m) => ({ ...m, team1: [...m.team1], team2: [...m.team2] }));
-        const courtIdx = cloned.findIndex((m) => m.court === swapSource.court);
-        if (courtIdx === -1) return prevMatches;
-        const match = cloned[courtIdx];
-        const teamArr = swapSource.team === 'team1' ? match.team1 : match.team2;
-        const outgoing = teamArr[swapSource.index];
-  
-        // replace on court
-        teamArr[swapSource.index] = benchPlayer;
-        match.avg1 = (match.team1[0].skill_level + match.team1[1].skill_level) / 2;
-        match.avg2 = (match.team2[0].skill_level + match.team2[1].skill_level) / 2;
-  
-        // update benched list
-        setBenched((prevBenched) => {
-          const filtered = prevBenched.filter((b) => b.id !== benchPlayer.id);
-          return [...filtered, outgoing];
+      
+      function handleBenchedClick(benchPlayer) {
+        // allow swap for everyone, but only if in swap mode
+        if (!swapSource) return;
+      
+        setMatches((prevMatches) => {
+          const cloned = prevMatches.map((m) => ({ ...m, team1: [...m.team1], team2: [...m.team2] }));
+          const courtIdx = cloned.findIndex((m) => m.court === swapSource.court);
+          if (courtIdx === -1) return prevMatches;
+          const match = cloned[courtIdx];
+          const teamArr = swapSource.team === 'team1' ? match.team1 : match.team2;
+          const outgoing = teamArr[swapSource.index];
+      
+          // replace on court
+          teamArr[swapSource.index] = benchPlayer;
+          match.avg1 = (match.team1[0].skill_level + match.team1[1].skill_level) / 2;
+          match.avg2 = (match.team2[0].skill_level + match.team2[1].skill_level) / 2;
+      
+          // update benched list
+          setBenched((prevBenched) => {
+            const filtered = prevBenched.filter((b) => b.id !== benchPlayer.id);
+            return [...filtered, outgoing];
+          });
+      
+          // update fairness memory
+          lastRoundBenched.current = new Set(
+            Array.from(lastRoundBenched.current)
+              .filter((id) => id !== benchPlayer.id)
+              .concat(outgoing.id)
+          );
+      
+          // update session stats
+          setSessionStats((prev) => {
+            const next = new Map(prev);
+      
+            // benchPlayer: benched → played
+            const bp =
+              next.get(benchPlayer.id) ||
+              makeEmptySessionRow(
+                benchPlayer.id,
+                benchPlayer.name,
+                benchPlayer.skill_level,
+                benchPlayer.gender
+              );
+            if (bp.benched > 0) bp.benched -= 1;
+            bp.played += 1;
+            bp.currentBenchStreak = 0;
+            next.set(benchPlayer.id, bp);
+      
+            // outgoing: played → benched
+            const op =
+              next.get(outgoing.id) ||
+              makeEmptySessionRow(outgoing.id, outgoing.name, outgoing.skill_level, outgoing.gender);
+            if (op.played > 0) op.played -= 1;
+            op.benched += 1;
+            op.currentBenchStreak = (op.currentBenchStreak || 0) + 1;
+            if (op.currentBenchStreak > (op.worstBenchStreak || 0)) {
+              op.worstBenchStreak = op.currentBenchStreak;
+            }
+            next.set(outgoing.id, op);
+      
+            return next;
+          });
+      
+          return cloned;
         });
-  
-        // update lastRoundBenched set so fairness stays accurate
-        lastRoundBenched.current = new Set(
-          Array.from(lastRoundBenched.current)
-            .filter((id) => id !== benchPlayer.id)
-            .concat(outgoing.id)
-        );
-  
-        // update session stats
-        setSessionStats((prev) => {
-          const next = new Map(prev);
-  
-          // benchPlayer: was benched, now played
-          const bp =
-            next.get(benchPlayer.id) ||
-            makeEmptySessionRow(benchPlayer.id, benchPlayer.name, benchPlayer.skill_level, benchPlayer.gender);
-          if (bp.benched > 0) bp.benched -= 1;
-          bp.played += 1;
-          bp.currentBenchStreak = 0;
-          next.set(benchPlayer.id, bp);
-  
-          // outgoing: was playing, now benched
-          const op =
-            next.get(outgoing.id) ||
-            makeEmptySessionRow(outgoing.id, outgoing.name, outgoing.skill_level, outgoing.gender);
-          if (op.played > 0) op.played -= 1;
-          op.benched += 1;
-          op.currentBenchStreak = (op.currentBenchStreak || 0) + 1;
-          if (op.currentBenchStreak > (op.worstBenchStreak || 0)) {
-            op.worstBenchStreak = op.currentBenchStreak;
-          }
-          next.set(outgoing.id, op);
-  
-          return next;
-        });
-  
-        return cloned;
-      });
-  
-      // exit swap mode
-      setSwapSource(null);
-    }
+      
+        // exit swap mode
+        setSwapSource(null);
+      }      
   
     /* =========================================================
        RENDER EARLY: CLUB GATE
@@ -716,7 +723,7 @@ export default function App() {
                         key={p.id}
                         player={p}
                         showSkill={isAdmin}
-                        clickable={isAdmin && benched.length > 0}
+                        clickable={benched.length > 0}
                         swapActive={!!swapSource}
                         isSwapSource={
                           swapSource &&
@@ -735,7 +742,7 @@ export default function App() {
                         key={p.id}
                         player={p}
                         showSkill={isAdmin}
-                        clickable={isAdmin && benched.length > 0}
+                        clickable={benched.length > 0}
                         swapActive={!!swapSource}
                         isSwapSource={
                           swapSource &&
@@ -760,7 +767,7 @@ export default function App() {
                     key={p.id}
                     player={p}
                     showSkill={isAdmin}
-                    clickable={!!swapSource && isAdmin}
+                    clickable={!!swapSource}
                     swapTarget={!!swapSource}
                     onClick={() => handleBenchedClick(p)}
                   />
