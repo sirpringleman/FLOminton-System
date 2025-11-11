@@ -829,9 +829,7 @@ export default function App() {
                       clickable
                       onClick={() => togglePresent(p)}
                     />
-                    {isAdmin && (
-                      <span className="bench-mini">B:{p.bench_count ?? 0}</span>
-                    )}
+                    {/* removed external bench-mini because it's now inside chip */}
                   </div>
                 ))}
               </div>
@@ -974,7 +972,7 @@ function PlayerChip({
     <span className={cls} onClick={clickable && onClick ? onClick : undefined}>
       {player.name}
       {showSkill ? <span className="skill-tag">L{player.skill_level}</span> : null}
-      {showBench ? <span className="bench-tag">B{benchCount ?? 0}</span> : null}
+      {showBench ? <span className="skill-tag bench-tag">B{benchCount ?? 0}</span> : null}
     </span>
   );
 }
