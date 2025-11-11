@@ -530,6 +530,7 @@ export default function App() {
       const teamArr = swapSource.team === 'team1' ? match.team1 : match.team2;
       const outgoing = teamArr[swapSource.index];
 
+      // swap
       teamArr[swapSource.index] = benchPlayer;
       match.avg1 = (match.team1[0].skill_level + match.team1[1].skill_level) / 2;
       match.avg2 = (match.team2[0].skill_level + match.team2[1].skill_level) / 2;
@@ -710,6 +711,8 @@ export default function App() {
                       key={p.id}
                       player={p}
                       showSkill={isAdmin}
+                      showBench={isAdmin}
+                      benchCount={p.bench_count ?? 0}
                       clickable={benched.length > 0}
                       swapActive={!!swapSource}
                       isSwapSource={
@@ -729,6 +732,8 @@ export default function App() {
                       key={p.id}
                       player={p}
                       showSkill={isAdmin}
+                      showBench={isAdmin}
+                      benchCount={p.bench_count ?? 0}
                       clickable={benched.length > 0}
                       swapActive={!!swapSource}
                       isSwapSource={
@@ -753,6 +758,8 @@ export default function App() {
                   key={p.id}
                   player={p}
                   showSkill={isAdmin}
+                  showBench={isAdmin}
+                  benchCount={p.bench_count ?? 0}
                   clickable={!!swapSource}
                   swapTarget={!!swapSource}
                   onClick={() => handleBenchedClick(p)}
@@ -817,6 +824,8 @@ export default function App() {
                     <PlayerChip
                       player={p}
                       showSkill={isAdmin}
+                      showBench={isAdmin}
+                      benchCount={p.bench_count ?? 0}
                       clickable
                       onClick={() => togglePresent(p)}
                     />
@@ -941,6 +950,8 @@ export default function App() {
 function PlayerChip({
   player,
   showSkill,
+  showBench,
+  benchCount,
   onClick,
   clickable,
   swapActive,
@@ -963,6 +974,7 @@ function PlayerChip({
     <span className={cls} onClick={clickable && onClick ? onClick : undefined}>
       {player.name}
       {showSkill ? <span className="skill-tag">L{player.skill_level}</span> : null}
+      {showBench ? <span className="bench-tag">B{benchCount ?? 0}</span> : null}
     </span>
   );
 }
