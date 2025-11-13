@@ -88,22 +88,25 @@ const LS = {
   },
 };
 
-function useBeep(volumeRef, onPrimed) {
+function useBeep(volumeRef) {
   const ctxRef = useRef(null);
   const ensure = () => {
     if (!ctxRef.current) {
+      if (typeof window === 'undefined') return null;
       const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
       ctxRef.current = new Ctx();
-      if (onPrimed) {
-        try {
-          onPrimed();
-        } catch {}
-      }
     }
     return ctxRef.current;
   };
-  const beep = (freq = 900, ms = 250) => {
+  const beep = async (freq = 900, ms = 250) => {
     const ctx = ensure();
+    if (!ctx) return;
+    try {
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+    } catch {}
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const vol = Math.max(0, Math.min(1, volumeRef.current ?? 0.3));
@@ -159,6 +162,8 @@ export default function App() {
   const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem('adminKey') || '');
   const isAdmin = !!adminKey;
 
+  const [audioPrimed, setAudioPrimed] = useState(false);
+
   const tickRef = useRef(null);
   const lastRoundBenched = useRef(new Set());
   const teammateHistory = useRef(new Map());
@@ -178,8 +183,7 @@ export default function App() {
 
   // sounds
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
-  const [audioPrimed, setAudioPrimed] = useState(false);
-  const { beep } = useBeep(volumeRef, () => setAudioPrimed(true));
+  const { beep } = useBeep(volumeRef);
 
   // swap state
   const [swapSource, setSwapSource] = useState(null);
@@ -479,14 +483,6 @@ export default function App() {
   }
 
   function openAdminLogin() {
-    if (isAdmin) {
-      // toggle OFF admin mode if already active
-      setAdminKey('');
-      try {
-        sessionStorage.removeItem('adminKey');
-      } catch {}
-      return;
-    }
     setShowAdminModal(true);
   }
 
@@ -506,6 +502,16 @@ export default function App() {
       setShowAdminModal(false);
     } else {
       alert('Incorrect admin password');
+    }
+  }
+
+  async function handleEnableAudio() {
+    try {
+      await beep(800, 120);
+      setAudioPrimed(true);
+    } catch (e) {
+      console.error('Audio enable failed', e);
+      alert('Could not enable audio. Try tapping again.');
     }
   }
 
@@ -596,14 +602,17 @@ export default function App() {
     setSwapSource(null);
   }
 
-  // helper: bench count per player for THIS session (used for B# display)
-  const getBenchCount = (id) => {
-    const row = sessionStats.get(id);
-    return row ? row.benched : 0;
-  };
-
-  // debug helper: reset session stats without touching DB or presence
-  function resetSessionStats() {
+  /* =========================================================
+     DEBUG: RESET SESSION STATS (ADMIN ONLY)
+     ========================================================= */
+  function resetSessionDebug() {
+    clearTick();
+    setRunning(false);
+    setPhase('stopped');
+    setMatches([]);
+    setBenched([]);
+    lastRoundBenched.current = new Set();
+    teammateHistory.current = new Map();
     setSessionStats(new Map());
     setDiag({
       roundBuildTimes: [],
@@ -633,10 +642,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <div className="brand">
-          🏸 The FLOminton System ({club})
-          {audioPrimed && <span> · 🔉 Audio Primed</span>}
-        </div>
+        <div className="brand">🏸 The FLOminton System ({club})</div>
         <div className="top-actions">
           {isSession && (
             <>
@@ -682,11 +688,32 @@ export default function App() {
               </button>
             </>
           )}
+
+          {!audioPrimed ? (
+            <button className="btn" onClick={handleEnableAudio}>
+              🔊 Enable audio
+            </button>
+          ) : (
+            <span className="audio-primed">🔉 Audio primed</span>
+          )}
+
           <button className="btn" onClick={() => setShowSettings(true)}>
             Settings
           </button>
-          <button className="btn" onClick={openAdminLogin}>
-            Admin
+          <button
+            className="btn"
+            onClick={() => {
+              if (isAdmin) {
+                setAdminKey('');
+                try {
+                  sessionStorage.removeItem('adminKey');
+                } catch {}
+              } else {
+                openAdminLogin();
+              }
+            }}
+          >
+            {isAdmin ? 'Admin (on)' : 'Admin'}
           </button>
           <button className="btn danger" onClick={endNight}>
             End Night
@@ -702,8 +729,20 @@ export default function App() {
           <button className="btn" onClick={() => setShowSettings(true)}>
             Settings
           </button>
-          <button className="btn" onClick={openAdminLogin}>
-            Admin Mode
+          <button
+            className="btn"
+            onClick={() => {
+              if (isAdmin) {
+                setAdminKey('');
+                try {
+                  sessionStorage.removeItem('adminKey');
+                } catch {}
+              } else {
+                openAdminLogin();
+              }
+            }}
+          >
+            {isAdmin ? 'Admin (on)' : 'Admin Mode'}
           </button>
           <button className="btn danger" onClick={endNight}>
             End Night
@@ -730,7 +769,7 @@ export default function App() {
               Open Display
             </button>
             {isAdmin && (
-              <button className="btn" onClick={resetSessionStats}>
+              <button className="btn" onClick={resetSessionDebug}>
                 Reset session stats
               </button>
             )}
@@ -754,7 +793,7 @@ export default function App() {
                       player={p}
                       showSkill={isAdmin}
                       showBench={isAdmin}
-                      benchCount={getBenchCount(p.id)}
+                      benchCount={p.bench_count ?? 0}
                       clickable={benched.length > 0}
                       swapActive={!!swapSource}
                       isSwapSource={
@@ -775,7 +814,7 @@ export default function App() {
                       player={p}
                       showSkill={isAdmin}
                       showBench={isAdmin}
-                      benchCount={getBenchCount(p.id)}
+                      benchCount={p.bench_count ?? 0}
                       clickable={benched.length > 0}
                       swapActive={!!swapSource}
                       isSwapSource={
@@ -801,7 +840,7 @@ export default function App() {
                   player={p}
                   showSkill={isAdmin}
                   showBench={isAdmin}
-                  benchCount={getBenchCount(p.id)}
+                  benchCount={p.bench_count ?? 0}
                   clickable={!!swapSource}
                   swapTarget={!!swapSource}
                   onClick={() => handleBenchedClick(p)}
@@ -867,11 +906,10 @@ export default function App() {
                       player={p}
                       showSkill={isAdmin}
                       showBench={isAdmin}
-                      benchCount={getBenchCount(p.id)}
+                      benchCount={p.bench_count ?? 0}
                       clickable
                       onClick={() => togglePresent(p)}
                     />
-                    {/* bench-mini removed – bench count now only inside chip */}
                   </div>
                 ))}
               </div>
@@ -1014,9 +1052,7 @@ function PlayerChip({
     <span className={cls} onClick={clickable && onClick ? onClick : undefined}>
       {player.name}
       {showSkill ? <span className="skill-tag">L{player.skill_level}</span> : null}
-      {showBench ? (
-        <span className="skill-tag bench-tag">B{benchCount ?? 0}</span>
-      ) : null}
+      {showBench ? <span className="bench-tag">B{benchCount ?? 0}</span> : null}
     </span>
   );
 }
@@ -1261,7 +1297,6 @@ function RundownModal({ onClose, payload }) {
       worstBenchStreak: s ? s.worstBenchStreak : 0,
       teammates: s ? s.teammates : [],
       opponents: s ? s.opponents : [],
-      dbBenched: typeof p.bench_count === 'number' ? p.bench_count : 0,
     };
   });
 
@@ -1270,6 +1305,9 @@ function RundownModal({ onClose, payload }) {
   const leastPlayed = [...perPlayer].sort((a, b) => a.played - b.played)[0] || null;
   const mostBenched = [...perPlayer].sort((a, b) => b.benched - a.benched)[0] || null;
   const worstStreak = [...perPlayer].sort((a, b) => b.worstBenchStreak - a.worstBenchStreak)[0] || null;
+
+  const minBenched = perPlayer.length ? Math.min(...perPlayer.map((p) => p.benched)) : 0;
+  const maxBenched = perPlayer.length ? Math.max(...perPlayer.map((p) => p.benched)) : 0;
 
   const avgBuild = diag.roundBuildTimes.length ? Math.round(avg(diag.roundBuildTimes)) : 0;
   const avgCourts = diag.usedCourts.length ? avg(diag.usedCourts).toFixed(2) : '—';
@@ -1341,6 +1379,12 @@ function RundownModal({ onClose, payload }) {
                   {worstStreak ? `${worstStreak.name} (${worstStreak.worstBenchStreak})` : '—'}
                 </p>
               </div>
+              <div className="summary-card">
+                <p className="label">Bench spread</p>
+                <p className="value">
+                  {totalPlayers ? `${minBenched}–${maxBenched}` : '—'}
+                </p>
+              </div>
             </div>
 
             <h4 style={{ marginTop: '16px' }}>Per-player breakdown</h4>
@@ -1351,9 +1395,7 @@ function RundownModal({ onClose, payload }) {
                     <th>Name</th>
                     <th>Lvl</th>
                     <th>Played</th>
-                    <th>Benched (session)</th>
-                    <th>Benched (DB)</th>
-                    <th>Bench sync</th>
+                    <th>Benched</th>
                     <th>Worst bench streak</th>
                     <th>Unique teammates</th>
                     <th>Unique opponents</th>
@@ -1366,8 +1408,6 @@ function RundownModal({ onClose, payload }) {
                       <td>{p.skill_level}</td>
                       <td>{p.played}</td>
                       <td>{p.benched}</td>
-                      <td>{p.dbBenched}</td>
-                      <td>{p.benched === p.dbBenched ? '✓' : '⚠︎'}</td>
                       <td>{p.worstBenchStreak}</td>
                       <td>{p.teammates ? p.teammates.length : 0}</td>
                       <td>{p.opponents ? p.opponents.length : 0}</td>
