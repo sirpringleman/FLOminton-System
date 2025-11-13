@@ -88,12 +88,17 @@ const LS = {
   },
 };
 
-function useBeep(volumeRef) {
+function useBeep(volumeRef, onPrimed) {
   const ctxRef = useRef(null);
   const ensure = () => {
     if (!ctxRef.current) {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       ctxRef.current = new Ctx();
+      if (onPrimed) {
+        try {
+          onPrimed();
+        } catch {}
+      }
     }
     return ctxRef.current;
   };
@@ -173,7 +178,8 @@ export default function App() {
 
   // sounds
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
-  const { beep } = useBeep(volumeRef);
+  const [audioPrimed, setAudioPrimed] = useState(false);
+  const { beep } = useBeep(volumeRef, () => setAudioPrimed(true));
 
   // swap state
   const [swapSource, setSwapSource] = useState(null);
@@ -473,6 +479,14 @@ export default function App() {
   }
 
   function openAdminLogin() {
+    if (isAdmin) {
+      // toggle OFF admin mode if already active
+      setAdminKey('');
+      try {
+        sessionStorage.removeItem('adminKey');
+      } catch {}
+      return;
+    }
     setShowAdminModal(true);
   }
 
@@ -588,6 +602,20 @@ export default function App() {
     return row ? row.benched : 0;
   };
 
+  // debug helper: reset session stats without touching DB or presence
+  function resetSessionStats() {
+    setSessionStats(new Map());
+    setDiag({
+      roundBuildTimes: [],
+      usedCourts: [],
+      teamImbalances: [],
+      spanPerMatch: [],
+      outOfBandCounts: [],
+    });
+    setRound(0);
+    roundRef.current = 0;
+  }
+
   /* =========================================================
      RENDER EARLY: CLUB GATE
      ========================================================= */
@@ -605,7 +633,10 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <div className="brand">🏸 The FLOminton System ({club})</div>
+        <div className="brand">
+          🏸 The FLOminton System ({club})
+          {audioPrimed && <span> · 🔉 Audio Primed</span>}
+        </div>
         <div className="top-actions">
           {isSession && (
             <>
@@ -698,6 +729,11 @@ export default function App() {
             <button className="btn" onClick={() => setView('display')}>
               Open Display
             </button>
+            {isAdmin && (
+              <button className="btn" onClick={resetSessionStats}>
+                Reset session stats
+              </button>
+            )}
           </div>
 
           <div className="courts">
@@ -1225,6 +1261,7 @@ function RundownModal({ onClose, payload }) {
       worstBenchStreak: s ? s.worstBenchStreak : 0,
       teammates: s ? s.teammates : [],
       opponents: s ? s.opponents : [],
+      dbBenched: typeof p.bench_count === 'number' ? p.bench_count : 0,
     };
   });
 
@@ -1314,7 +1351,9 @@ function RundownModal({ onClose, payload }) {
                     <th>Name</th>
                     <th>Lvl</th>
                     <th>Played</th>
-                    <th>Benched</th>
+                    <th>Benched (session)</th>
+                    <th>Benched (DB)</th>
+                    <th>Bench sync</th>
                     <th>Worst bench streak</th>
                     <th>Unique teammates</th>
                     <th>Unique opponents</th>
@@ -1327,6 +1366,8 @@ function RundownModal({ onClose, payload }) {
                       <td>{p.skill_level}</td>
                       <td>{p.played}</td>
                       <td>{p.benched}</td>
+                      <td>{p.dbBenched}</td>
+                      <td>{p.benched === p.dbBenched ? '✓' : '⚠︎'}</td>
                       <td>{p.worstBenchStreak}</td>
                       <td>{p.teammates ? p.teammates.length : 0}</td>
                       <td>{p.opponents ? p.opponents.length : 0}</td>
