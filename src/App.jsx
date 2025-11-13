@@ -288,82 +288,35 @@ export default function App() {
     setRunning(false);
   }
 
-  /* =========================================================
+    /* =========================================================
      BUILD ROUND
      ========================================================= */
-  async function buildNextRoundInternal() {
-    setSwapSource(null);
-
-    const nextRound = roundRef.current + 1;
-    roundRef.current = nextRound;
-    setRound(nextRound);
-
-    if (present.length < 4) {
-      setMatches([]);
-      setBenched(present.slice());
-      return;
-    }
-
-    const t0 = performance.now();
-    const { playing, benched: bs } = selectPlayersForRound(
-      present,
-      nextRound,
-      lastRoundBenched.current,
-      courtsCount
-    );
-    lastRoundBenched.current = new Set(bs.map((b) => b.id));
-    setBenched(bs);
-
-    const matchesBuilt = buildMatchesFrom16(playing, teammateHistory.current, courtsCount);
-    setMatches(matchesBuilt);
-    const diagSnap = computeDiagnostics(matchesBuilt);
-    const t1 = performance.now();
-
-    setDiag((prev) => ({
-      roundBuildTimes: [...prev.roundBuildTimes, Math.round(t1 - t0)],
-      usedCourts: [...prev.usedCourts, matchesBuilt.length],
-      teamImbalances: [...prev.teamImbalances, Number(diagSnap.avgImbalance.toFixed(3))],
-      spanPerMatch: [...prev.spanPerMatch, Number(diagSnap.avgSpan.toFixed(3))],
-      outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
-    }));
-
-    setSessionStats((prev) => {
-      const next = new Map(prev);
-      playing.forEach((p) => {
-        const cur =
-          next.get(p.id) ||
-          makeEmptySessionRow(p.id, p.name, p.skill_level, p.gender);
-        cur.played += 1;
-        cur.currentBenchStreak = 0;
-        cur.currentBenchGap = 0;
-        next.set(p.id, cur);
-      });
-      bs.forEach((p) => {
-        const cur =
-          next.get(p.id) ||
-          makeEmptySessionRow(p.id, p.name, p.skill_level, p.gender);
-        cur.benched += 1;
-        cur.currentBenchStreak += 1;
-        if (cur.currentBenchStreak > cur.worstBenchStreak) {
-          cur.worstBenchStreak = cur.currentBenchStreak;
-        }
-        cur.currentBenchGap += 1;
-        cur.benchGaps.push(cur.currentBenchGap);
-        next.set(p.id, cur);
-      });
-      matchesBuilt.forEach((m) => {
-        if (!m.team1 || !m.team2) return;
-        const [a, b] = m.team1;
-        const [c, d] = m.team2;
-        addTeammateOpponent(next, a.id, [b], [c, d]);
-        addTeammateOpponent(next, b.id, [a], [c, d]);
-        addTeammateOpponent(next, c.id, [d], [a, b]);
-        addTeammateOpponent(next, d.id, [c], [a, b]);
-      });
-      return next;
-    });
-
-    try {
+     async function buildNextRoundInternal() {
+      setSwapSource(null);
+  
+      const nextRound = roundRef.current + 1;
+      roundRef.current = nextRound;
+      setRound(nextRound);
+  
+      if (present.length < 4) {
+        setMatches([]);
+        setBenched(present.slice());
+        return;
+      }
+  
+      const t0 = performance.now();
+  
+      // Select who plays / benches
+      const { playing, benched: bs } = selectPlayersForRound(
+        present,
+        nextRound,
+        lastRoundBenched.current,
+        courtsCount
+      );
+      lastRoundBenched.current = new Set(bs.map((b) => b.id));
+  
+      // ---- NEW: bump bench_count + last_played_round in React state so chips update immediately ----
+      // Prepare DB updates (based on *old* bench_count values)
       const updates = [];
       playing.forEach((p) => {
         updates.push({ id: p.id, last_played_round: nextRound });
@@ -371,13 +324,96 @@ export default function App() {
       bs.forEach((p) => {
         updates.push({ id: p.id, bench_count: (p.bench_count || 0) + 1 });
       });
-      if (updates.length) {
-        await APIClient.patch(updates, adminKey);
+  
+      // Update local players[] so every place that reads p.bench_count / p.last_played_round sees fresh values
+      setPlayers((prev) => {
+        const benchIds = new Set(bs.map((b) => b.id));
+        const playIds = new Set(playing.map((p) => p.id));
+        return prev.map((p) => {
+          if (benchIds.has(p.id)) {
+            return {
+              ...p,
+              bench_count: (p.bench_count || 0) + 1,
+            };
+          }
+          if (playIds.has(p.id)) {
+            return {
+              ...p,
+              last_played_round: nextRound,
+            };
+          }
+          return p;
+        });
+      });
+  
+      // Also store the incremented bench_count inside the benched[] list used for chips
+      const benchedWithUpdated = bs.map((b) => ({
+        ...b,
+        bench_count: (b.bench_count || 0) + 1,
+      }));
+      setBenched(benchedWithUpdated);
+  
+      // Build matches from the PLAYING set
+      const matchesBuilt = buildMatchesFrom16(playing, teammateHistory.current, courtsCount);
+      setMatches(matchesBuilt);
+  
+      const diagSnap = computeDiagnostics(matchesBuilt);
+      const t1 = performance.now();
+  
+      setDiag((prev) => ({
+        roundBuildTimes: [...prev.roundBuildTimes, Math.round(t1 - t0)],
+        usedCourts: [...prev.usedCourts, matchesBuilt.length],
+        teamImbalances: [...prev.teamImbalances, Number(diagSnap.avgImbalance.toFixed(3))],
+        spanPerMatch: [...prev.spanPerMatch, Number(diagSnap.avgSpan.toFixed(3))],
+        outOfBandCounts: [...prev.outOfBandCounts, diagSnap.outOfBand],
+      }));
+  
+      // Session stats bookkeeping (unchanged)
+      setSessionStats((prev) => {
+        const next = new Map(prev);
+        playing.forEach((p) => {
+          const cur =
+            next.get(p.id) ||
+            makeEmptySessionRow(p.id, p.name, p.skill_level, p.gender);
+          cur.played += 1;
+          cur.currentBenchStreak = 0;
+          cur.currentBenchGap = 0;
+          next.set(p.id, cur);
+        });
+        bs.forEach((p) => {
+          const cur =
+            next.get(p.id) ||
+            makeEmptySessionRow(p.id, p.name, p.skill_level, p.gender);
+          cur.benched += 1;
+          cur.currentBenchStreak += 1;
+          if (cur.currentBenchStreak > cur.worstBenchStreak) {
+            cur.worstBenchStreak = cur.currentBenchStreak;
+          }
+          cur.currentBenchGap += 1;
+          cur.benchGaps.push(cur.currentBenchGap);
+          next.set(p.id, cur);
+        });
+        matchesBuilt.forEach((m) => {
+          if (!m.team1 || !m.team2) return;
+          const [a, b] = m.team1;
+          const [c, d] = m.team2;
+          addTeammateOpponent(next, a.id, [b], [c, d]);
+          addTeammateOpponent(next, b.id, [a], [c, d]);
+          addTeammateOpponent(next, c.id, [d], [a, b]);
+          addTeammateOpponent(next, d.id, [c], [a, b]);
+        });
+        return next;
+      });
+  
+      // Persist to backend (using the updates we built above)
+      try {
+        if (updates.length) {
+          await APIClient.patch(updates, adminKey);
+        }
+      } catch (e) {
+        console.error('persist round stats failed', e);
       }
-    } catch (e) {
-      console.error('persist round stats failed', e);
-    }
-  }
+    }  
 
   /* =========================================================
      END NIGHT → snapshot + reset
