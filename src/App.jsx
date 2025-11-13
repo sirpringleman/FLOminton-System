@@ -90,6 +90,7 @@ const LS = {
 
 function useBeep(volumeRef) {
   const ctxRef = useRef(null);
+
   const ensure = () => {
     if (!ctxRef.current) {
       const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -97,8 +98,29 @@ function useBeep(volumeRef) {
     }
     return ctxRef.current;
   };
-  const beep = (freq = 900, ms = 250) => {
+
+  // Call this from a real tap/click (e.g. Build/Resume button)
+  const primeAudio = async () => {
     const ctx = ensure();
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (e) {
+        console.error('AudioContext resume failed', e);
+      }
+    }
+  };
+
+  const beep = async (freq = 900, ms = 250) => {
+    const ctx = ensure();
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (e) {
+        console.error('AudioContext resume failed in beep', e);
+        return;
+      }
+    }
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const vol = Math.max(0, Math.min(1, volumeRef.current ?? 0.3));
@@ -109,7 +131,8 @@ function useBeep(volumeRef) {
     osc.start();
     osc.stop(ctx.currentTime + ms / 1000);
   };
-  return { beep };
+
+  return { beep, primeAudio };
 }
 
 export default function App() {
@@ -173,7 +196,7 @@ export default function App() {
 
   // sounds
   const volumeRef = useRef(LS.getNum('flo.volume', 0.3, 0, 1));
-  const { beep } = useBeep(volumeRef);
+  const { beep, primeAudio } = useBeep(volumeRef);
 
   // swap state
   const [swapSource, setSwapSource] = useState(null);
@@ -603,21 +626,24 @@ export default function App() {
         <div className="top-actions">
           {isSession && (
             <>
-              <button
-                className="btn primary"
-                onClick={async () => {
-                  if (matches.length === 0) {
-                    await buildNextRoundInternal();
-                  }
-                  if (phase === 'transition') {
-                    startTransitionTimer();
-                  } else {
-                    startRoundTimer();
-                  }
-                }}
-              >
-                Build / Resume
-              </button>
+             <button
+  className="btn primary"
+  onClick={async () => {
+    await primeAudio(); // important for iPad/iOS
+
+    if (matches.length === 0) {
+      await buildNextRoundInternal();
+    }
+    if (phase === 'transition') {
+      startTransitionTimer();
+    } else {
+      startRoundTimer();
+    }
+  }}
+>
+  Build / Resume
+</button>
+
               <button className="btn" onClick={pauseTimer}>
                 Pause
               </button>
