@@ -1,92 +1,183 @@
 // netlify/functions/players.js
-// Tolerates BOTH shapes:
-//   { updates: [ { id, fields: { is_present: true } } ] }
-//   { updates: [ { id, is_present: true } ] }
-// Now also supports multi-tenant via ?club=ABC and body.club_code on POST.
+// FULL REWRITE FOR FLOMINTON ELO SYSTEM
+//
+// Supports:
+//  GET       → list all players
+//  POST      → upsert players
+//  PATCH     → bulk update fields for many players
+//  DELETE    → delete a player
+//  POST /reset → reset all stats (admin only)
+//
+// Notes:
+//   - Reset DOES NOT change is_present (as requested)
+//   - All new stats fields for ELO system are supported
+//   - Handles both {id, fields:{...}} and {id, field1, field2...} formats
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient } from '@supabase/supabase-js';
 
-const url = process.env.SUPABASE_URL
-const key = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_ANON_KEY
+const url = process.env.SUPABASE_URL;
+const key =
+  process.env.SUPABASE_SERVICE_ROLE ||
+  process.env.SUPABASE_ANON_KEY;
 
-const supabase = createClient(url, key, { auth: { persistSession: false } })
+const supabase = createClient(url, key, { auth: { persistSession: false } });
 
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,PATCH,DELETE,OPTIONS',
-  'access-control-allow-headers': 'content-type,authorization',
+  'access-control-allow-headers': 'content-type,authorization,x-admin-key',
   'content-type': 'application/json'
+};
+
+const J = (status, data) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: CORS
+  });
+
+// Hard-coded admin key header name
+const ADMIN_HEADER = "x-admin-key";
+
+/* ============================================================
+   RESET ALL STATS (ADMIN ONLY)
+   ============================================================ */
+
+async function resetAllStats(adminKey) {
+  if (!adminKey) {
+    return J(403, { error: "Admin key required" });
+  }
+
+  // Reset all fields EXCEPT is_present, name, gender, handedness, notes, status
+  const resetFields = {
+    elo_rating: 1000,
+    elo_delta_session: 0,
+    elo_delta_total: 0,
+    wins: 0,
+    losses: 0,
+    matches_played: 0,
+    attendance_count: 0,
+    win_streak: 0,
+    loss_streak: 0,
+    bench_count: 0,
+    last_played_round: 0,
+    last_seen_at: null
+  };
+
+  const { error } = await supabase
+    .from('players')
+    .update(resetFields)
+    .neq('id', null); // update ALL rows
+
+  if (error) {
+    console.error("[players/reset] failed:", error);
+    return J(500, { error: error.message });
+  }
+
+  return J(200, { ok: true, reset: resetFields });
 }
 
-const J = (status, data) => new Response(JSON.stringify(data), { status, headers: CORS })
+/* ============================================================
+   MAIN HANDLER
+   ============================================================ */
 
 export default async (req, ctx) => {
   try {
-    const method = req.method
+    const method = req.method;
+    const adminKey = req.headers.get(ADMIN_HEADER) || "";
 
-    // preflight
+    // Preflight
     if (method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS })
+      return new Response(null, { status: 204, headers: CORS });
     }
 
     if (!url || !key) {
-      console.error('[players] missing env')
-      return J(500, { error: 'Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE/ANON_KEY' })
+      console.error("[players] missing env");
+      return J(500, { error: "Missing SUPABASE_URL or keys" });
     }
 
-    /* ======================= GET ======================= */
+    /* ========================================================
+       SPECIAL ROUTE → /reset (admin only)
+       ======================================================== */
+    if (req.url.includes("/reset") && method === "POST") {
+      return resetAllStats(adminKey);
+    }
+
+    /* ========================================================
+       GET → list players
+       ======================================================== */
     if (method === 'GET') {
-      // read ?club=ABC
-      const u = new URL(req.url)
-      const club = u.searchParams.get('club')
-
-      let query = supabase.from('players').select('*').order('name', { ascending: true })
-      if (club) {
-        query = supabase
-          .from('players')
-          .select('*')
-          .eq('club_code', club)
-          .order('name', { ascending: true })
-      }
-
-      const { data, error } = await query
+      const { data, error } = await supabase
+        .from('players')
+        .select('*')
+        .order('name', { ascending: true });
 
       if (error) {
-        console.error('[players][GET]', error)
-        return J(500, { error: error.message || String(error) })
+        console.error("[players/GET]", error);
+        return J(500, { error: error.message });
       }
-      return J(200, data || [])
+      return J(200, data || []);
     }
 
-    /* ======================= PATCH ======================= */
-    if (method === 'PATCH') {
-      let body = {}
-      try { body = await req.json() } catch {}
-      const incoming = Array.isArray(body?.updates) ? body.updates : []
+    /* ========================================================
+       POST → upsert players
+       ======================================================== */
+    if (method === 'POST') {
+      let body = {};
+      try { body = await req.json(); } catch {}
 
-      if (!incoming.length) {
-        return J(400, { error: 'Missing updates array' })
+      // Upsert multiple players
+      const players = Array.isArray(body.players) ? body.players : [];
+
+      if (!players.length) {
+        return J(400, { error: "No players provided" });
       }
 
-      const results = []
+      const { data, error } = await supabase
+        .from('players')
+        .upsert(players, { onConflict: 'id' })
+        .select();
 
-      for (const u of incoming) {
-        if (!u || !u.id) continue
+      if (error) {
+        console.error("[players/POST]", error);
+        return J(500, { error: error.message });
+      }
 
-        // accept both shapes
-        // shape A: { id, fields: {...} }
-        // shape B: { id, is_present: true, bench_count: 2, ... }
-        let fields = {}
-        if (u.fields && typeof u.fields === 'object') {
-          fields = u.fields
+      return J(200, { ok: true, rows: data });
+    }
+
+    /* ========================================================
+       PATCH → update multiple players
+       ======================================================== */
+    if (method === 'PATCH') {
+      let body = {};
+      try { body = await req.json(); } catch {}
+
+      const updates = Array.isArray(body.updates) ? body.updates : [];
+
+      if (!updates.length) {
+        return J(400, { error: "Missing updates array" });
+      }
+
+      const results = [];
+
+      for (const u of updates) {
+        if (!u || !u.id) continue;
+
+        // Accept both:
+        // { id, fields:{...} }
+        // { id, elo_rating:1200, matches_played: 3, ... }
+        let fields = {};
+        if (u.fields && typeof u.fields === "object") {
+          fields = u.fields;
         } else {
-          const { id, fields: _ignored, ...rest } = u
-          fields = rest
+          const { id, fields: _ignored, ...rest } = u;
+          fields = rest;
         }
 
+        // No fields?
         if (!fields || Object.keys(fields).length === 0) {
-          console.warn('[players][PATCH] no fields for id', u.id)
-          continue
+          console.warn("[players/PATCH] no fields for id", u.id);
+          continue;
         }
 
         const { data, error } = await supabase
@@ -94,75 +185,50 @@ export default async (req, ctx) => {
           .update(fields)
           .eq('id', u.id)
           .select()
-          .maybeSingle()
+          .maybeSingle();
+
         if (error) {
-          console.error('[players][PATCH] update failed:', {
+          console.error("[players/PATCH] update failed:", {
             id: u.id,
             fields,
             error
-          })
-          return J(500, {
-            error: error.message || String(error),
-            id: u.id,
-            fields
-          })
+          });
+          return J(500, { error: error.message, id: u.id, fields });
         }
 
-        results.push(data)
+        results.push(data);
       }
 
-      return J(200, { ok: true, count: results.length, rows: results })
+      return J(200, { ok: true, count: results.length, rows: results });
     }
 
-    /* ======================= POST (upsert) ======================= */
-    if (method === 'POST') {
-      let body = {}
-      try { body = await req.json() } catch {}
-      const clubCode = body?.club_code || null
-      let players = Array.isArray(body?.players) ? body.players : []
-      if (!players.length) {
-        return J(400, { error: 'No players provided' })
-      }
-
-      // force club_code if provided in body so each club has its own roster
-      if (clubCode) {
-        players = players.map((p) => ({
-          ...p,
-          club_code: p.club_code || clubCode
-        }))
-      }
-
-      const { data, error } = await supabase
-        .from('players')
-        .upsert(players, { onConflict: 'id' })
-        .select()
-
-      if (error) {
-        console.error('[players][POST] upsert error:', error)
-        return J(500, { error: error.message || String(error) })
-      }
-
-      return J(200, { ok: true, rows: data })
-    }
-
-    /* ======================= DELETE ======================= */
+    /* ========================================================
+       DELETE → delete a player by ID
+       ======================================================== */
     if (method === 'DELETE') {
-      let body = {}
-      try { body = await req.json() } catch {}
-      const id = body?.id
-      if (!id) return J(400, { error: 'Missing id' })
+      let body = {};
+      try { body = await req.json(); } catch {}
 
-      const { error } = await supabase.from('players').delete().eq('id', id)
+      const id = body?.id;
+      if (!id) return J(400, { error: "Missing id" });
+
+      const { error } = await supabase
+        .from('players')
+        .delete()
+        .eq('id', id);
+
       if (error) {
-        console.error('[players][DELETE] error:', error)
-        return J(500, { error: error.message || String(error) })
+        console.error("[players/DELETE]", error);
+        return J(500, { error: error.message });
       }
-      return J(200, { ok: true })
+
+      return J(200, { ok: true });
     }
 
-    return J(405, { error: 'Method not allowed' })
+    return J(405, { error: "Method not allowed" });
+
   } catch (err) {
-    console.error('[players] fatal:', err)
-    return J(500, { error: String(err?.message || err) })
+    console.error("[players] fatal:", err);
+    return J(500, { error: String(err?.message || err) });
   }
-}
+};

@@ -34,3 +34,6 @@ LEFT TO DO:
     - when timer reaches 00:00 let the time blink red / white                                                                     - DONE
 - Testing                                                    - ? WILL I EVER BE DONE
 
+v3
+- Sitting Out Column: for players present but for whatever reason want to not be included in upcoming matchmaking
+- Players who join late, when marked present, join the Present List as well as the Benched list instantly, players who leave early, get removed from Present List as well as Benched list instantly

@@ -1,27 +1,60 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
-    />
-    <title>TheFLOmintonSystem</title>
+    <meta charset="utf-8" />
 
-    <!-- Inter font for the entire site (as requested) -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- FLOminton Title -->
+    <title>FLOminton — Smart Badminton System</title>
+
+    <!-- Meta Tags -->
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="FLOminton — Automated badminton session management, ELO matchmaking, live courts view, player statistics, and leaderboards."
+    />
+
+    <!-- Favicon (optional – replace with your own) -->
+    <link rel="icon" href="/favicon.ico" />
+
+    <!-- PWA Manifest (optional, uncomment when you're ready for PWA) -->
+    <!-- <link rel="manifest" href="/manifest.json" /> -->
+
+    <!-- Global Styles -->
+    <link rel="stylesheet" href="./App.css" />
+
+    <!-- Google Fonts (Optional – nice clean font) -->
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap"
       rel="stylesheet"
     />
+
     <style>
-      /* Ensure Inter is the default across the app, while respecting your canonical App.css */
-      html, body { font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+      /* Mount container full screen by default */
+      body, html {
+        margin: 0;
+        padding: 0;
+        background: #111;
+        color: #fff;
+        min-height: 100vh;
+        font-family: "Inter", sans-serif;
+        overflow-x: hidden;
+      }
+
+      #root {
+        width: 100%;
+        min-height: 100vh;
+      }
     </style>
   </head>
+
   <body>
+    <noscript>You need JavaScript enabled to run FLOminton.</noscript>
+
+    <!-- React Root -->
     <div id="root"></div>
+
+    <!-- React Scripts -->
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
