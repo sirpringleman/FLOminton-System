@@ -9,7 +9,7 @@
     color: #fff;
     padding-bottom: 40px;
     overflow-x: hidden;
-    font-family: Arial, sans-serif;
+    font-family: "Inter", Arial, sans-serif;
   }
   
   .page {
@@ -22,18 +22,19 @@
   
   .top-tabs {
     display: flex;
+    align-items: center;
     background: #1c1c1c;
     padding: 8px;
     border-bottom: 2px solid #333;
     position: sticky;
     top: 0;
     z-index: 50;
+    gap: 6px;
   }
   
   .tab {
     flex: 1;
     padding: 10px;
-    margin: 0 4px;
     background: #222;
     border: 1px solid #444;
     color: #ddd;
@@ -52,6 +53,47 @@
   
   .tab:hover {
     background: #2a2a2a;
+  }
+  
+  .settings-icon-btn {
+    padding: 8px 10px;
+    background: #222;
+    border-radius: 6px;
+    border: 1px solid #444;
+    cursor: pointer;
+    color: #ddd;
+    font-size: 1rem;
+  }
+  
+  /* ============================================================
+     HOME PAGE
+     ============================================================ */
+  
+  .home-page {
+    padding: 20px;
+    text-align: center;
+  }
+  
+  .home-page h1 {
+    font-size: 2.4rem;
+    margin-bottom: 4px;
+  }
+  
+  .home-subtitle {
+    margin-bottom: 20px;
+    opacity: 0.8;
+  }
+  
+  .home-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  
+  .home-btn {
+    min-width: 180px;
   }
   
   /* ============================================================
@@ -79,17 +121,11 @@
     margin-bottom: 10px;
   }
   
-  /* Team layout */
-  
   .team-box {
     background: #222;
     padding: 10px;
     border-radius: 8px;
     margin: 6px 0;
-  }
-  
-  .team-round {
-    background: #222;
   }
   
   .upcoming-team {
@@ -103,17 +139,112 @@
     margin: 3px 0;
   }
   
-  .display-chip {
-    font-size: 1.4rem;
-    padding: 10px;
-  }
-  
-  /* VS divider */
-  
   .vs-line {
     margin: 6px 0;
     font-size: 0.9rem;
     opacity: 0.7;
+  }
+  
+  /* ============================================================
+     BIG TIMER & ROUND HEADER
+     ============================================================ */
+  
+  .session-page {
+    padding: 16px;
+  }
+  
+  .big-timer-header {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-top: 16px;
+    gap: 4px;
+  }
+  
+  .round-label {
+    font-size: 1.4rem;
+    margin: 0;
+  }
+  
+  .big-timer {
+    font-size: 4.5rem;
+    font-weight: bold;
+    margin-top: 4px;
+    text-align: center;
+  }
+  
+  .big-timer.transition {
+    color: #3fa9ff;
+  }
+  
+  .timer-controls {
+    margin-top: 8px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+  }
+  
+  .pause-btn {
+    background: #ffb347;
+    border-color: #ffb347;
+    color: #000;
+  }
+  
+  .resume-btn {
+    background: #3cd85b;
+    border-color: #3cd85b;
+    color: #000;
+  }
+  
+  /* ============================================================
+     SESSION STATE SECTIONS
+     ============================================================ */
+  
+  .idle-container {
+    text-align: center;
+    margin-top: 30px;
+  }
+  
+  .idle-subtext {
+    opacity: 0.8;
+  }
+  
+  /* Session controls (now above courts) */
+  .session-controls {
+    display: flex;
+    justify-content: center;
+    margin-top: 20px;
+  }
+  
+  .btn {
+    padding: 10px 18px;
+    background: #333;
+    border: 1px solid #555;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #ddd;
+    transition: all 0.2s ease;
+  }
+  
+  .btn:hover {
+    background: #444;
+  }
+  
+  .btn.small {
+    padding: 6px 10px;
+  }
+  
+  /* Transition state */
+  
+  .transition-container {
+    text-align: center;
+    margin-top: 20px;
+  }
+  
+  /* Round state */
+  
+  .round-container {
+    margin-top: 20px;
   }
   
   /* ============================================================
@@ -138,10 +269,8 @@
   
   .winner-input-container h2 {
     text-align: center;
-    margin-bottom: 12px;
+    margin-top: 20px;
   }
-  
-  /* Confirm button */
   
   .winner-submit-area {
     margin-top: 20px;
@@ -169,23 +298,7 @@
   }
   
   /* ============================================================
-     TRANSITION MODE
-     ============================================================ */
-  
-  .transition-container {
-    text-align: center;
-    margin-top: 20px;
-  }
-  
-  .transition-timer {
-    font-size: 3rem;
-    margin: 20px 0;
-    font-weight: bold;
-    color: #3fa9ff;
-  }
-  
-  /* ============================================================
-     PRESENCE SYSTEM
+     PRESENCE & BENCHED
      ============================================================ */
   
   .presence-section {
@@ -218,73 +331,28 @@
     opacity: 0.6;
   }
   
-  /* ============================================================
-     SESSION CONTROL BUTTONS
-     ============================================================ */
+  /* Benched list styled like presence list */
   
-  .session-controls {
-    display: flex;
-    justify-content: center;
-    gap: 20px;
-    margin-top: 25px;
+  .benched-section {
+    margin-top: 24px;
   }
   
-  .btn {
-    padding: 10px 18px;
+  .benched-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  
+  .benched-pill {
+    padding: 8px 12px;
+    border-radius: 20px;
     background: #333;
     border: 1px solid #555;
-    border-radius: 6px;
-    cursor: pointer;
-    color: #ddd;
-    transition: all 0.2s ease;
-  }
-  
-  .btn:hover {
-    background: #444;
-  }
-  
-  .btn.small {
-    padding: 6px 10px;
   }
   
   /* ============================================================
-     DISPLAY MODE
-     ============================================================ */
-  
-  .display-overlay {
-    position: fixed;
-    inset: 0;
-    background: #000;
-    z-index: 200;
-    overflow-y: auto;
-    padding: 20px;
-  }
-  
-  .display-courts {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 20px;
-    margin-top: 20px;
-  }
-  
-  .close-display {
-    float: right;
-    margin-bottom: 20px;
-  }
-  
-  .court-card.display {
-    background: #1a1a1a;
-    padding: 20px;
-    border: 2px solid #444;
-  }
-  
-  .team-box.display-team {
-    background: #222;
-    padding: 16px;
-  }
-  
-  /* ============================================================
-     MODALS (Admin Key, Settings, etc.)
+     MODALS (Settings, Admin)
      ============================================================ */
   
   .modal-backdrop {
@@ -341,6 +409,18 @@
     color: #fff;
     margin-top: 6px;
     margin-bottom: 12px;
+  }
+  
+  /* Settings rows */
+  
+  .setting-row {
+    margin-bottom: 12px;
+  }
+  
+  .setting-row label {
+    display: block;
+    font-size: 0.9rem;
+    margin-bottom: 4px;
   }
   
   /* ============================================================
@@ -406,12 +486,12 @@
       grid-template-columns: 1fr;
     }
   
-    .display-courts {
-      grid-template-columns: 1fr;
-    }
-  
     .tab {
       font-size: 0.9rem;
+    }
+  
+    .big-timer {
+      font-size: 3.4rem;
     }
   }
   

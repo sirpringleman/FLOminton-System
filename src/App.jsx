@@ -8,8 +8,8 @@
 // ✓ Benched list
 // ✓ No display mode
 // ✓ New tab order
-// ✓ Start Session → goes to Session tab (START = B)
-// ✓ Transition BEFORE rounds except round 1
+// ✓ Start Session → goes to Session tab (does NOT auto-start a round)
+// ✓ Transition BEFORE rounds
 // ✓ Big centered timer
 // ✓ ELO pipeline (winner input → elo update → transition → next round)
 // ✓ K-factor override
@@ -212,7 +212,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(transitionRef.current);
-  }, [phase, settings.roundDuration]);
+  }, [phase, settings.roundDuration, settings.transitionTime]);
 
   // --------------------------------------------------------
   // ROUND TIMER
@@ -243,11 +243,11 @@ export default function App() {
   }, [phase, isPaused]);
 
   // --------------------------------------------------------
-  // WARNING SOUND
+  // WARNING SOUND (placeholder hook)
   // --------------------------------------------------------
   useEffect(() => {
     if (roundTimeLeft === settings.warningTime && phase === "round" && !isPaused) {
-      // Play sound if implemented
+      // Play warning sound here if you add audio
       // playWarningSound();
     }
   }, [roundTimeLeft, phase, isPaused, settings.warningTime]);
@@ -414,27 +414,13 @@ export default function App() {
             Settings ⚙️
           </button>
         </div>
-
-        <div className="home-settings-summary">
-          <h3>Current Configuration</h3>
-          <ul>
-            <li>Round Duration: {settings.roundDuration}s</li>
-            <li>Warning Time: {settings.warningTime}s</li>
-            <li>Transition Time: {settings.transitionTime}s</li>
-            <li>Courts: {settings.courtCount}</li>
-            <li>ELO K-Factor: {settings.kFactor}</li>
-          </ul>
-        </div>
       </div>
     );
   }
 
   // --------------------------------------------------------
-  // SETTINGS MODAL CONTENT (UI completed in part 2)
+  // MAIN RENDER
   // --------------------------------------------------------
-
-  // The main render function continues next
-  // (Session tab, WinnerInput mode, Transition mode, presence list, top tabs, etc.)
 
   return (
     <div className="app-container">
@@ -489,8 +475,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Session tab continues next in part 2 */}
-
       {/* SESSION TAB */}
       {tab === "session" && (
         <div className="session-page">
@@ -538,6 +522,13 @@ export default function App() {
               <p className="idle-subtext">Press “Start / Next Round” to begin</p>
             </div>
           )}
+
+          {/* ---------------- SESSION CONTROLS (NOW ABOVE COURTS) ---------------- */}
+          <div className="session-controls">
+            <button className="btn" onClick={startRound}>
+              Start / Next Round
+            </button>
+          </div>
 
           {/* ---------------- TRANSITION MODE ---------------- */}
           {phase === "transition" && (
@@ -723,19 +714,10 @@ export default function App() {
               ))}
             </div>
           </div>
-
-          {/* ---------------- SESSION CONTROLS ---------------- */}
-          <div className="session-controls">
-            <button className="btn" onClick={startRound}>
-              Start / Next Round
-            </button>
-          </div>
         </div>
       )}
 
-      {/* SETTINGS MODAL — FULL IMPLEMENTATION IN PART 3 */}
-
-      {/* SETTINGS MODAL — FULL IMPLEMENTATION */}
+      {/* SETTINGS MODAL */}
       {settingsOpen && (
         <div className="modal-backdrop">
           <div className="modal">
@@ -884,72 +866,3 @@ export default function App() {
     </div>
   );
 }
-
-// END OF APP COMPONENT
-
-/*
-===========================================================
-FLOMINTON APP.JSX v2.0 — SUMMARY
-===========================================================
-
-✔ New top navigation:
-   [ Home ] [ Player Management ] [ Session ] [ Leaderboards ]
-
-✔ Home tab:
-   - Start Session → jumps to Session tab (does NOT auto-start a round)
-   - Quick links to Player Management + Leaderboards
-   - Shows current configuration (round time, warning, transition, courts, K-factor)
-   - Settings button
-
-✔ Settings:
-   - Round Duration (minutes) → stored as seconds
-   - Warning Time (seconds)
-   - Transition Time (seconds)
-   - Courts Available (1–8)
-   - ELO K-Factor (4–64)
-   - All saved in localStorage and loaded on app start
-
-✔ Session flow:
-   1) Phase "idle" → waiting for “Start / Next Round”
-   2) Start / Next Round:
-      - Uses selectPlayersForRound (fairness) with settings.courtCount
-      - Builds matches via buildMatchesFrom16
-      - Updates attendance via applyAttendanceForSession
-      - Sets phase → "transition"
-   3) Phase "transition":
-      - Big centered timer using settings.transitionTime
-      - Shows upcoming matches
-      - Shows Benched list
-      - When 0 → moves to phase "round"
-   4) Phase "round":
-      - Big centered round timer using settings.roundDuration
-      - Pause / Resume buttons
-      - Courts visible
-      - When 0 → phase "winnerInput"
-   5) Phase "winnerInput":
-      - Full-side clickable panels for each court
-      - Green winner glow + dim loser
-      - Confirm Results button only enabled when all courts have a winner
-      - confirmResults():
-          - Calls applyMatchResults(currentMatches, winners, players, settings.kFactor)
-          - PATCH /players with updated stats
-          - POST /match_results with row per player per match
-          - Increments roundNumber
-          - Sets phase → "transition" for next round
-
-✔ Presence:
-   - Present list at bottom of Session tab
-   - Double-click name to toggle is_present
-   - Syncs to /players via PATCH
-
-✔ Benched:
-   - Shown in both transition and round phases
-
-✔ Admin Key:
-   - Modal when no adminKey in sessionStorage
-   - Admin key stored in sessionStorage and reused
-
-===========================================================
-END OF FILE
-===========================================================
-*/
