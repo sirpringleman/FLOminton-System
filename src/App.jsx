@@ -1,11 +1,11 @@
 // src/App.jsx
-// FLOMINTON ELO SYSTEM — FULL VERSION 2.0 REWRITE
+// FLOMINTON ELO SYSTEM — FULL VERSION 2.1 REWRITE
 // ------------------------------------------------
 // Includes:
 // ✓ Home Page
 // ✓ Full Settings System (saved in localStorage)
 // ✓ Pause/Resume timer
-// ✓ Benched list
+// ✓ Benched list (horizontal)
 // ✓ No display mode
 // ✓ New tab order
 // ✓ Start Session → goes to Session tab (does NOT auto-start a round)
@@ -15,6 +15,8 @@
 // ✓ K-factor override
 // ✓ Variable courts
 // ✓ Updated logic.js integration
+// ✓ End Night: marks everyone unpresent, shows Session Summary + System Diagnostics,
+//   then returns user to Home when modal is closed.
 
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
@@ -65,7 +67,7 @@ export default function App() {
   const [benched, setBenched] = useState([]);
   const [currentMatches, setCurrentMatches] = useState([]);
   const [roundNumber, setRoundNumber] = useState(1);
-  const [phase, setPhase] = useState("idle"); 
+  const [phase, setPhase] = useState("idle");
   // idle → waiting for “Start / Next Round”
   // transition → countdown before round
   // round → active playing phase
@@ -81,10 +83,23 @@ export default function App() {
   const timerRef = useRef(null);
   const transitionRef = useRef(null);
 
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem("adminKey") || "");
+  const [adminKey, setAdminKey] = useState(
+    () => sessionStorage.getItem("adminKey") || ""
+  );
 
   // TAB ORDER: Home → PlayerManagement → Session → Leaderboards
   const [tab, setTab] = useState("home");
+
+  // Session-level tracking (for summary/diagnostics)
+  const [completedRounds, setCompletedRounds] = useState(0);
+  const [totalMatchesPlayed, setTotalMatchesPlayed] = useState(0);
+  const [sessionStats, setSessionStats] = useState({}); // per-player { matches, wins, losses, benchCount }
+
+  const [sessionSummary, setSessionSummary] = useState(null);
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
+
+  // Settings modal
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // --------------------------------------------------------
   // LOAD PLAYERS AT START
@@ -96,9 +111,8 @@ export default function App() {
       if (!Array.isArray(data)) throw new Error("Invalid players format");
 
       setPlayers(data);
-      setPresent(data.filter(p => p.is_present));
+      setPresent(data.filter((p) => p.is_present));
       setBenched([]);
-
     } catch (err) {
       console.error(err);
       alert("Failed to load players.");
@@ -113,7 +127,7 @@ export default function App() {
   // PRESENCE TOGGLE
   // --------------------------------------------------------
   async function togglePresence(id) {
-    const updated = players.map(p =>
+    const updated = players.map((p) =>
       p.id === id ? { ...p, is_present: !p.is_present } : p
     );
     setPlayers(updated);
@@ -123,18 +137,20 @@ export default function App() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
+          "X-Admin-Key": adminKey,
         },
         body: JSON.stringify({
-          updates: [{ id, is_present: updated.find(p => p.id === id).is_present }]
-        })
+          updates: [
+            { id, is_present: updated.find((p) => p.id === id).is_present },
+          ],
+        }),
       });
     } catch (err) {
       console.error(err);
       alert("Failed to update presence.");
     }
 
-    const nowPresent = updated.filter(p => p.is_present);
+    const nowPresent = updated.filter((p) => p.is_present);
     setPresent(nowPresent);
   }
 
@@ -151,7 +167,6 @@ export default function App() {
   // START ROUND (FIRST STEP IS TRANSITION)
   // --------------------------------------------------------
   function startRound() {
-
     if (present.length < 4) {
       alert("Not enough players present to start a round.");
       return;
@@ -181,7 +196,7 @@ export default function App() {
     setPlayers(updatedPlayers);
     setAttendanceSet(updatedAttendanceSet);
 
-    // Clear winners
+    // Clear winners for the new round
     setWinners({});
 
     // Transition BEFORE the round starts
@@ -198,7 +213,7 @@ export default function App() {
     if (transitionRef.current) clearInterval(transitionRef.current);
 
     transitionRef.current = setInterval(() => {
-      setTransitionTime(prev => {
+      setTransitionTime((prev) => {
         if (prev <= 1) {
           clearInterval(transitionRef.current);
           // Move to round phase
@@ -228,7 +243,7 @@ export default function App() {
     if (timerRef.current) clearInterval(timerRef.current);
 
     timerRef.current = setInterval(() => {
-      setRoundTimeLeft(prev => {
+      setRoundTimeLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timerRef.current);
           // Move to WinnerInput phase
@@ -246,7 +261,11 @@ export default function App() {
   // WARNING SOUND (placeholder hook)
   // --------------------------------------------------------
   useEffect(() => {
-    if (roundTimeLeft === settings.warningTime && phase === "round" && !isPaused) {
+    if (
+      roundTimeLeft === settings.warningTime &&
+      phase === "round" &&
+      !isPaused
+    ) {
       // Play warning sound here if you add audio
       // playWarningSound();
     }
@@ -256,12 +275,12 @@ export default function App() {
   // SELECT WINNER
   // --------------------------------------------------------
   function selectWinner(courtNumber, team) {
-    setWinners(prev => ({ ...prev, [courtNumber]: team }));
+    setWinners((prev) => ({ ...prev, [courtNumber]: team }));
   }
 
   function allCourtsHaveWinners() {
     if (!currentMatches.length) return false;
-    return currentMatches.every(m => winners[m.court]);
+    return currentMatches.every((m) => winners[m.court]);
   }
 
   // --------------------------------------------------------
@@ -270,8 +289,46 @@ export default function App() {
   async function confirmResults() {
     if (!allCourtsHaveWinners()) return;
 
+    const matches = currentMatches;
+
+    // Update per-session stats (local only, not stored in DB)
+    setSessionStats((prev) => {
+      const stats = { ...prev };
+
+      const updateForPlayer = (player, didWin) => {
+        if (!player || !player.id) return;
+        if (!stats[player.id]) {
+          stats[player.id] = {
+            matches: 0,
+            wins: 0,
+            losses: 0,
+            benchCount: player.bench_count || 0,
+          };
+        }
+        stats[player.id].matches += 1;
+        if (didWin) stats[player.id].wins += 1;
+        else stats[player.id].losses += 1;
+        // Track latest bench count (for diagnostics)
+        stats[player.id].benchCount =
+          player.bench_count ?? stats[player.id].benchCount ?? 0;
+      };
+
+      for (const m of matches) {
+        const decision = winners[m.court];
+        if (!decision) continue;
+
+        const t1Win = decision === "team1";
+        const t2Win = !t1Win;
+
+        for (const p of m.team1) updateForPlayer(p, t1Win);
+        for (const p of m.team2) updateForPlayer(p, t2Win);
+      }
+
+      return stats;
+    });
+
     const updatedLocalPlayers = applyMatchResults(
-      currentMatches,
+      matches,
       winners,
       players,
       settings.kFactor
@@ -279,7 +336,7 @@ export default function App() {
 
     setPlayers(updatedLocalPlayers);
 
-    const updates = updatedLocalPlayers.map(p => ({
+    const updates = updatedLocalPlayers.map((p) => ({
       id: p.id,
       elo_rating: p.elo_rating,
       elo_delta_session: p.elo_delta_session,
@@ -290,7 +347,7 @@ export default function App() {
       attendance_count: p.attendance_count,
       win_streak: p.win_streak,
       loss_streak: p.loss_streak,
-      last_seen_at: p.last_seen_at
+      last_seen_at: p.last_seen_at,
     }));
 
     try {
@@ -298,9 +355,9 @@ export default function App() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
+          "X-Admin-Key": adminKey,
         },
-        body: JSON.stringify({ updates })
+        body: JSON.stringify({ updates }),
       });
     } catch (err) {
       console.error(err);
@@ -309,7 +366,7 @@ export default function App() {
 
     // Write match results
     const resultsRows = [];
-    for (const m of currentMatches) {
+    for (const m of matches) {
       const result = winners[m.court];
       const t1Win = result === "team1";
       const t2Win = !t1Win;
@@ -322,7 +379,8 @@ export default function App() {
 
       for (const p of [...team1, ...team2]) {
         const before = p.elo_rating || 1000;
-        const after = updatedLocalPlayers.find(x => x.id === p.id)?.elo_rating || before;
+        const after =
+          updatedLocalPlayers.find((x) => x.id === p.id)?.elo_rating || before;
         const delta = after - before;
 
         resultsRows.push({
@@ -331,13 +389,14 @@ export default function App() {
           court_number: m.court,
           player_id: p.id,
           team: team1.includes(p) ? "team1" : "team2",
-          result: (team1.includes(p) && t1Win) || (team2.includes(p) && t2Win)
-            ? "win"
-            : "loss",
+          result:
+            (team1.includes(p) && t1Win) || (team2.includes(p) && t2Win)
+              ? "win"
+              : "loss",
           elo_before: before,
           elo_after: after,
           elo_change: delta,
-          opponent_avg_elo: team1.includes(p) ? avg2 : avg1
+          opponent_avg_elo: team1.includes(p) ? avg2 : avg1,
         });
       }
     }
@@ -347,17 +406,21 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
+          "X-Admin-Key": adminKey,
         },
-        body: JSON.stringify({ results: resultsRows })
+        body: JSON.stringify({ results: resultsRows }),
       });
     } catch (err) {
       console.error(err);
       alert("Failed writing match results.");
     }
 
+    // Round stats
+    setCompletedRounds((r) => r + 1);
+    setTotalMatchesPlayed((m) => m + matches.length);
+
     // Next: transition before next round
-    setRoundNumber(r => r + 1);
+    setRoundNumber((r) => r + 1);
     setTransitionTime(settings.transitionTime);
     setPhase("transition");
   }
@@ -376,14 +439,150 @@ export default function App() {
   // --------------------------------------------------------
   // SETTINGS MODAL
   // --------------------------------------------------------
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   function openSettings() {
     setSettingsOpen(true);
   }
 
   function closeSettings() {
     setSettingsOpen(false);
+  }
+
+  // --------------------------------------------------------
+  // BUILD SESSION SUMMARY + SYSTEM DIAGNOSTICS
+  // --------------------------------------------------------
+  function buildSessionSummary() {
+    const totalPlayers = players.length;
+    const uniqueParticipants = attendanceSet.size;
+    const rounds = completedRounds;
+    const matches = totalMatchesPlayed;
+
+    const statsEntries = Object.entries(sessionStats);
+    const playersById = new Map(players.map((p) => [p.id, p]));
+
+    const perPlayer = statsEntries.map(([id, s]) => {
+      const p = playersById.get(id);
+      const eloDelta = p?.elo_delta_session || 0;
+      const benchCount = p?.bench_count || s.benchCount || 0;
+      return {
+        id,
+        name: p?.name || "Unknown",
+        matches: s.matches,
+        wins: s.wins,
+        losses: s.losses,
+        eloDelta,
+        benchCount,
+      };
+    });
+
+    const topImproved = perPlayer
+      .slice()
+      .sort((a, b) => b.eloDelta - a.eloDelta)
+      .slice(0, 5);
+
+    const topActive = perPlayer
+      .slice()
+      .sort((a, b) => b.matches - a.matches)
+      .slice(0, 5);
+
+    const totalEloChange = perPlayer.reduce(
+      (sum, p) => sum + p.eloDelta,
+      0
+    );
+    const avgEloChange =
+      uniqueParticipants > 0 ? totalEloChange / uniqueParticipants : 0;
+
+    const maxBench = Math.max(
+      0,
+      ...players.map((p) => p.bench_count || 0)
+    );
+
+    const mostBenched = perPlayer
+      .slice()
+      .sort((a, b) => b.benchCount - a.benchCount)
+      .slice(0, 5);
+
+    const neverBenchedCount = perPlayer.filter(
+      (p) => (p.benchCount || 0) === 0 && attendanceSet.has(p.id)
+    ).length;
+
+    return {
+      totalPlayers,
+      uniqueParticipants,
+      rounds,
+      matches,
+      avgEloChange,
+      maxBench,
+      mostBenched,
+      neverBenchedCount,
+      topImproved,
+      topActive,
+    };
+  }
+
+  // --------------------------------------------------------
+  // END NIGHT
+  // --------------------------------------------------------
+  async function endNight() {
+    // Stop timers
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (transitionRef.current) clearInterval(transitionRef.current);
+
+    // Build summary BEFORE we reset anything
+    const summary = buildSessionSummary();
+    setSessionSummary(summary);
+    setShowSummaryModal(true);
+
+    // Reset players (mark unpresent, reset per-session counters)
+    const resetPlayers = players.map((p) => ({
+      ...p,
+      is_present: false,
+      bench_count: 0,
+      last_played_round: 0,
+      elo_delta_session: 0,
+    }));
+
+    setPlayers(resetPlayers);
+    setPresent([]);
+    setBenched([]);
+    setCurrentMatches([]);
+    setPhase("idle");
+    setRoundNumber(1);
+    setAttendanceSet(new Set());
+    setCompletedRounds(0);
+    setTotalMatchesPlayed(0);
+    setSessionStats({});
+    setWinners({});
+    setRoundTimeLeft(settings.roundDuration);
+    setTransitionTime(settings.transitionTime);
+    setIsPaused(false);
+
+    // Persist reset to backend
+    try {
+      await fetch(API_PLAYERS, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Key": adminKey,
+        },
+        body: JSON.stringify({
+          updates: resetPlayers.map((p) => ({
+            id: p.id,
+            is_present: false,
+            bench_count: 0,
+            last_played_round: 0,
+            elo_delta_session: 0,
+          })),
+        }),
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Failed to reset players at end of night.");
+    }
+  }
+
+  function closeSummaryModal() {
+    setShowSummaryModal(false);
+    setTab("home");
   }
 
   // --------------------------------------------------------
@@ -406,7 +605,10 @@ export default function App() {
             Player Management
           </button>
 
-          <button className="btn home-btn" onClick={() => setTab("leaderboards")}>
+          <button
+            className="btn home-btn"
+            onClick={() => setTab("leaderboards")}
+          >
             Leaderboards
           </button>
 
@@ -478,16 +680,13 @@ export default function App() {
       {/* SESSION TAB */}
       {tab === "session" && (
         <div className="session-page">
-
-          {/* ---------------- BIG TIMER + ROUND HEADER ---------------- */}
+          {/* BIG TIMER + ROUND HEADER */}
           {(phase === "round" || phase === "transition") && (
             <div className="big-timer-header">
               <h2 className="round-label">Round {roundNumber}</h2>
 
               {phase === "round" && (
-                <div className="big-timer">
-                  {formatTime(roundTimeLeft)}
-                </div>
+                <div className="big-timer">{formatTime(roundTimeLeft)}</div>
               )}
 
               {phase === "transition" && (
@@ -515,34 +714,39 @@ export default function App() {
             </div>
           )}
 
-          {/* ---------------- IDLE MODE ---------------- */}
+          {/* IDLE MODE */}
           {phase === "idle" && (
             <div className="idle-container">
               <h2>Session Ready</h2>
-              <p className="idle-subtext">Press “Start / Next Round” to begin</p>
+              <p className="idle-subtext">
+                Press “Start / Next Round” to begin
+              </p>
             </div>
           )}
 
-          {/* ---------------- SESSION CONTROLS (NOW ABOVE COURTS) ---------------- */}
+          {/* SESSION CONTROLS (ABOVE COURTS) */}
           <div className="session-controls">
             <button className="btn" onClick={startRound}>
               Start / Next Round
             </button>
+            <button className="btn danger" onClick={endNight}>
+              End Night
+            </button>
           </div>
 
-          {/* ---------------- TRANSITION MODE ---------------- */}
+          {/* TRANSITION MODE */}
           {phase === "transition" && (
             <div className="transition-container">
               <h3>Next Round Begins Soon…</h3>
 
               {/* Show upcoming matches */}
               <div className="courts-grid">
-                {currentMatches.map(match => (
+                {currentMatches.map((match) => (
                   <div key={match.court} className="court-card upcoming">
                     <div className="court-title">Court {match.court}</div>
 
                     <div className="team-box upcoming-team">
-                      {match.team1.map(p => (
+                      {match.team1.map((p) => (
                         <div key={p.id} className="player-chip">
                           {p.name}
                         </div>
@@ -552,7 +756,7 @@ export default function App() {
                     <div className="vs-line">vs</div>
 
                     <div className="team-box upcoming-team">
-                      {match.team2.map(p => (
+                      {match.team2.map((p) => (
                         <div key={p.id} className="player-chip">
                           {p.name}
                         </div>
@@ -567,8 +771,10 @@ export default function App() {
                 <div className="benched-section">
                   <h3>Benched</h3>
                   <div className="benched-list">
-                    {benched.map(p => (
-                      <div key={p.id} className="benched-pill">{p.name}</div>
+                    {benched.map((p) => (
+                      <div key={p.id} className="benched-pill">
+                        {p.name}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -576,17 +782,17 @@ export default function App() {
             </div>
           )}
 
-          {/* ---------------- ROUND MODE ---------------- */}
+          {/* ROUND MODE */}
           {phase === "round" && (
             <div className="round-container">
               <div className="courts-grid">
-                {currentMatches.map(match => (
+                {currentMatches.map((match) => (
                   <div key={match.court} className="court-card">
                     <div className="court-title">Court {match.court}</div>
 
                     {/* Team 1 */}
                     <div className="team-box">
-                      {match.team1.map(p => (
+                      {match.team1.map((p) => (
                         <div key={p.id} className="player-chip">
                           {p.name}
                         </div>
@@ -597,7 +803,7 @@ export default function App() {
 
                     {/* Team 2 */}
                     <div className="team-box">
-                      {match.team2.map(p => (
+                      {match.team2.map((p) => (
                         <div key={p.id} className="player-chip">
                           {p.name}
                         </div>
@@ -612,8 +818,10 @@ export default function App() {
                 <div className="benched-section">
                   <h3>Benched</h3>
                   <div className="benched-list">
-                    {benched.map(p => (
-                      <div key={p.id} className="benched-pill">{p.name}</div>
+                    {benched.map((p) => (
+                      <div key={p.id} className="benched-pill">
+                        {p.name}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -621,13 +829,13 @@ export default function App() {
             </div>
           )}
 
-          {/* ---------------- WINNER INPUT MODE ---------------- */}
+          {/* WINNER INPUT MODE */}
           {phase === "winnerInput" && (
             <div className="winner-input-container">
               <h2>Select Winners — Round {roundNumber}</h2>
 
               <div className="courts-grid">
-                {currentMatches.map(match => {
+                {currentMatches.map((match) => {
                   const selected = winners[match.court];
                   const t1Selected = selected === "team1";
                   const t2Selected = selected === "team2";
@@ -648,7 +856,7 @@ export default function App() {
                         }
                         onClick={() => selectWinner(match.court, "team1")}
                       >
-                        {match.team1.map(p => (
+                        {match.team1.map((p) => (
                           <div key={p.id} className="player-chip">
                             {p.name}
                           </div>
@@ -669,7 +877,7 @@ export default function App() {
                         }
                         onClick={() => selectWinner(match.court, "team2")}
                       >
-                        {match.team2.map(p => (
+                        {match.team2.map((p) => (
                           <div key={p.id} className="player-chip">
                             {p.name}
                           </div>
@@ -697,11 +905,11 @@ export default function App() {
             </div>
           )}
 
-          {/* ---------------- PRESENCE PANEL ---------------- */}
+          {/* PRESENCE PANEL */}
           <div className="presence-section">
             <h3>Present Players</h3>
             <div className="presence-list">
-              {players.map(p => (
+              {players.map((p) => (
                 <div
                   key={p.id}
                   className={
@@ -742,7 +950,7 @@ export default function App() {
                     const seconds = Math.max(60, mins * 60);
                     saveSettings({
                       ...settings,
-                      roundDuration: seconds
+                      roundDuration: seconds,
                     });
                   }}
                 />
@@ -760,7 +968,7 @@ export default function App() {
                     const sec = Math.max(0, Number(e.target.value) || 0);
                     saveSettings({
                       ...settings,
-                      warningTime: sec
+                      warningTime: sec,
                     });
                   }}
                 />
@@ -778,7 +986,7 @@ export default function App() {
                     const sec = Math.max(10, Number(e.target.value) || 10);
                     saveSettings({
                       ...settings,
-                      transitionTime: sec
+                      transitionTime: sec,
                     });
                   }}
                 />
@@ -794,10 +1002,13 @@ export default function App() {
                   max={8}
                   value={settings.courtCount}
                   onChange={(e) => {
-                    const courts = Math.max(1, Math.min(8, Number(e.target.value) || 1));
+                    const courts = Math.max(
+                      1,
+                      Math.min(8, Number(e.target.value) || 1)
+                    );
                     saveSettings({
                       ...settings,
-                      courtCount: courts
+                      courtCount: courts,
                     });
                   }}
                 />
@@ -813,10 +1024,13 @@ export default function App() {
                   max={64}
                   value={settings.kFactor}
                   onChange={(e) => {
-                    const k = Math.max(4, Math.min(64, Number(e.target.value) || 4));
+                    const k = Math.max(
+                      4,
+                      Math.min(64, Number(e.target.value) || 4)
+                    );
                     saveSettings({
                       ...settings,
-                      kFactor: k
+                      kFactor: k,
                     });
                   }}
                 />
@@ -832,6 +1046,92 @@ export default function App() {
         </div>
       )}
 
+      {/* SESSION SUMMARY + SYSTEM DIAGNOSTICS MODAL */}
+      {showSummaryModal && sessionSummary && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <div className="modal-head">
+              <h3>Session Summary & Diagnostics</h3>
+            </div>
+
+            <div className="modal-body">
+              {/* Session Summary */}
+              <div className="panel glass">
+                <h4>Session Summary</h4>
+                <p>Rounds completed: {sessionSummary.rounds}</p>
+                <p>Total matches played: {sessionSummary.matches}</p>
+                <p>
+                  Unique players who played: {sessionSummary.uniqueParticipants}
+                </p>
+                <p>
+                  Average ELO change:&nbsp;
+                  {sessionSummary.avgEloChange.toFixed(1)}
+                </p>
+
+                {sessionSummary.topImproved.length > 0 && (
+                  <>
+                    <h5>Top ELO Gains</h5>
+                    <ul>
+                      {sessionSummary.topImproved.map((p) => (
+                        <li key={p.id}>
+                          {p.name}: {p.eloDelta > 0 ? "+" : ""}
+                          {p.eloDelta.toFixed(0)}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                {sessionSummary.topActive.length > 0 && (
+                  <>
+                    <h5>Most Active (by matches)</h5>
+                    <ul>
+                      {sessionSummary.topActive.map((p) => (
+                        <li key={p.id}>
+                          {p.name}: {p.matches} match
+                          {p.matches !== 1 ? "es" : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+
+              {/* System Diagnostics */}
+              <div className="panel glass" style={{ marginTop: "12px" }}>
+                <h4>System Diagnostics</h4>
+                <p>Total players in system: {sessionSummary.totalPlayers}</p>
+                <p>
+                  Players who played and were never benched:{" "}
+                  {sessionSummary.neverBenchedCount}
+                </p>
+                <p>Max bench_count seen: {sessionSummary.maxBench}</p>
+
+                {sessionSummary.mostBenched.length > 0 && (
+                  <>
+                    <h5>Most Benched</h5>
+                    <ul>
+                      {sessionSummary.mostBenched.map((p) => (
+                        <li key={p.id}>
+                          {p.name}: {p.benchCount} time
+                          {p.benchCount !== 1 ? "s" : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-foot">
+              <button className="btn" onClick={closeSummaryModal}>
+                Close &amp; Return Home
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ADMIN KEY INPUT MODAL */}
       {!adminKey && (
         <div className="modal-backdrop">
@@ -841,7 +1141,9 @@ export default function App() {
             </div>
 
             <div className="modal-body">
-              <p>Enter admin key to enable editing, resets, and presence updates.</p>
+              <p>
+                Enter admin key to enable editing, resets, and presence updates.
+              </p>
               <input
                 className="input"
                 type="password"
