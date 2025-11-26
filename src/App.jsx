@@ -1,5 +1,5 @@
 // src/App.jsx
-// FLOMINTON ELO SYSTEM — FULL VERSION 2.1 REWRITE
+// FLOMINTON ELO SYSTEM — FULL VERSION 2.1 FIX
 // ------------------------------------------------
 // Includes:
 // ✓ Home Page
@@ -16,6 +16,7 @@
 // ✓ Variable courts
 // ✓ Updated logic.js integration
 // ✓ End Night: reset presence/bench, show Session Summary + System Diagnostics, return to Home
+// ✓ FIX: bench_count & last_played_round persisted so new pairings actually rotate players
 
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
@@ -161,16 +162,20 @@ export default function App() {
 
   // --------------------------------------------------------
   // START ROUND (FIRST STEP IS TRANSITION)
+  // *** FIXED: updates bench_count & last_played_round on players ***
   // --------------------------------------------------------
   function startRound() {
-    if (present.length < 4) {
+    // Always derive current present players from the latest players state
+    const currentPresent = players.filter((p) => p.is_present);
+    if (currentPresent.length < 4) {
       alert("Not enough players present to start a round.");
       return;
     }
+    setPresent(currentPresent);
 
-    // Fairness selection: who plays
+    // Fairness selection: who plays / who is benched this round
     const { playing, benched: newBenched } = selectPlayersForRound(
-      present,
+      currentPresent,
       roundNumber,
       new Set(),
       settings.courtCount
@@ -178,7 +183,24 @@ export default function App() {
 
     setBenched(newBenched);
 
-    // Build actual matches
+    // Persist bench_count and last_played_round into main players array
+    const baseUpdatedPlayers = players.map((p) => {
+      if (playing.some((x) => x.id === p.id)) {
+        return {
+          ...p,
+          last_played_round: roundNumber
+        };
+      }
+      if (newBenched.some((x) => x.id === p.id)) {
+        return {
+          ...p,
+          bench_count: (p.bench_count || 0) + 1
+        };
+      }
+      return p;
+    });
+
+    // Build actual matches from the chosen playing group
     const matches = buildMatchesFrom16(
       playing,
       new Map(),
@@ -186,9 +208,9 @@ export default function App() {
     );
     setCurrentMatches(matches);
 
-    // Attendance for first-time players
+    // Attendance for first-time players this session
     const { updatedPlayers, updatedAttendanceSet } =
-      applyAttendanceForSession(matches, players, attendanceSet);
+      applyAttendanceForSession(matches, baseUpdatedPlayers, attendanceSet);
 
     setPlayers(updatedPlayers);
     setAttendanceSet(updatedAttendanceSet);
@@ -394,10 +416,6 @@ export default function App() {
 
   // --------------------------------------------------------
   // END NIGHT
-  //  - Build summary & diagnostics
-  //  - Reset presence & bench info
-  //  - Show summary modal
-  //  - After closing, go to Home
   // --------------------------------------------------------
   async function endNight() {
     const ok = window.confirm(
