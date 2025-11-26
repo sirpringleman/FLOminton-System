@@ -209,10 +209,11 @@
     opacity: 0.8;
   }
   
-  /* Session controls (now above courts) */
+  /* Session controls (above courts) */
   .session-controls {
     display: flex;
     justify-content: center;
+    gap: 12px;
     margin-top: 20px;
   }
   
@@ -232,6 +233,18 @@
   
   .btn.small {
     padding: 6px 10px;
+  }
+  
+  /* Danger button */
+  
+  .danger {
+    background: #ff4444 !important;
+    border-color: #ff4444 !important;
+    color: #000 !important;
+  }
+  
+  .danger:hover {
+    background: #ff6666 !important;
   }
   
   /* Transition state */
@@ -352,7 +365,7 @@
   }
   
   /* ============================================================
-     MODALS (Settings, Admin)
+     MODALS (Settings, Summary, Admin)
      ============================================================ */
   
   .modal-backdrop {
@@ -372,6 +385,10 @@
     width: 90%;
     max-width: 450px;
     border: 1px solid #444;
+  }
+  
+  .modal.large {
+    max-width: 800px;
   }
   
   .modal-head {
@@ -423,6 +440,19 @@
     margin-bottom: 4px;
   }
   
+  /* Diagnostics list */
+  
+  .diagnostics-list {
+    list-style: none;
+    padding-left: 0;
+    margin: 0;
+  }
+  
+  .diagnostics-list li {
+    margin-bottom: 4px;
+    font-size: 0.9rem;
+  }
+  
   /* ============================================================
      PLAYER MANAGEMENT + LEADERBOARDS
      ============================================================ */
@@ -465,16 +495,6 @@
   .glass {
     background: rgba(255,255,255,0.05);
     backdrop-filter: blur(4px);
-  }
-  
-  .danger {
-    background: #ff4444 !important;
-    border-color: #ff4444 !important;
-    color: #000 !important;
-  }
-  
-  .danger:hover {
-    background: #ff6666 !important;
   }
   
   /* ============================================================

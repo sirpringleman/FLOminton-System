@@ -5,7 +5,7 @@
 // ✓ Home Page
 // ✓ Full Settings System (saved in localStorage)
 // ✓ Pause/Resume timer
-// ✓ Benched list (horizontal)
+// ✓ Benched list
 // ✓ No display mode
 // ✓ New tab order
 // ✓ Start Session → goes to Session tab (does NOT auto-start a round)
@@ -15,8 +15,7 @@
 // ✓ K-factor override
 // ✓ Variable courts
 // ✓ Updated logic.js integration
-// ✓ End Night: marks everyone unpresent, shows Session Summary + System Diagnostics,
-//   then returns user to Home when modal is closed.
+// ✓ End Night: reset presence/bench, show Session Summary + System Diagnostics, return to Home
 
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
@@ -90,16 +89,13 @@ export default function App() {
   // TAB ORDER: Home → PlayerManagement → Session → Leaderboards
   const [tab, setTab] = useState("home");
 
-  // Session-level tracking (for summary/diagnostics)
-  const [completedRounds, setCompletedRounds] = useState(0);
-  const [totalMatchesPlayed, setTotalMatchesPlayed] = useState(0);
-  const [sessionStats, setSessionStats] = useState({}); // per-player { matches, wins, losses, benchCount }
-
-  const [sessionSummary, setSessionSummary] = useState(null);
-  const [showSummaryModal, setShowSummaryModal] = useState(false);
-
   // Settings modal
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Session summary / diagnostics modal
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryData, setSummaryData] = useState(null);
+  const [diagnosticsData, setDiagnosticsData] = useState(null);
 
   // --------------------------------------------------------
   // LOAD PLAYERS AT START
@@ -137,13 +133,13 @@ export default function App() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey,
+          "X-Admin-Key": adminKey
         },
         body: JSON.stringify({
           updates: [
-            { id, is_present: updated.find((p) => p.id === id).is_present },
-          ],
-        }),
+            { id, is_present: updated.find((p) => p.id === id).is_present }
+          ]
+        })
       });
     } catch (err) {
       console.error(err);
@@ -172,7 +168,7 @@ export default function App() {
       return;
     }
 
-    // --- Fairness selection: who plays ---
+    // Fairness selection: who plays
     const { playing, benched: newBenched } = selectPlayersForRound(
       present,
       roundNumber,
@@ -182,21 +178,22 @@ export default function App() {
 
     setBenched(newBenched);
 
-    // --- Build actual matches ---
-    const matches = buildMatchesFrom16(playing, new Map(), settings.courtCount);
+    // Build actual matches
+    const matches = buildMatchesFrom16(
+      playing,
+      new Map(),
+      settings.courtCount
+    );
     setCurrentMatches(matches);
 
     // Attendance for first-time players
-    const { updatedPlayers, updatedAttendanceSet } = applyAttendanceForSession(
-      matches,
-      players,
-      attendanceSet
-    );
+    const { updatedPlayers, updatedAttendanceSet } =
+      applyAttendanceForSession(matches, players, attendanceSet);
 
     setPlayers(updatedPlayers);
     setAttendanceSet(updatedAttendanceSet);
 
-    // Clear winners for the new round
+    // Clear winners
     setWinners({});
 
     // Transition BEFORE the round starts
@@ -289,46 +286,8 @@ export default function App() {
   async function confirmResults() {
     if (!allCourtsHaveWinners()) return;
 
-    const matches = currentMatches;
-
-    // Update per-session stats (local only, not stored in DB)
-    setSessionStats((prev) => {
-      const stats = { ...prev };
-
-      const updateForPlayer = (player, didWin) => {
-        if (!player || !player.id) return;
-        if (!stats[player.id]) {
-          stats[player.id] = {
-            matches: 0,
-            wins: 0,
-            losses: 0,
-            benchCount: player.bench_count || 0,
-          };
-        }
-        stats[player.id].matches += 1;
-        if (didWin) stats[player.id].wins += 1;
-        else stats[player.id].losses += 1;
-        // Track latest bench count (for diagnostics)
-        stats[player.id].benchCount =
-          player.bench_count ?? stats[player.id].benchCount ?? 0;
-      };
-
-      for (const m of matches) {
-        const decision = winners[m.court];
-        if (!decision) continue;
-
-        const t1Win = decision === "team1";
-        const t2Win = !t1Win;
-
-        for (const p of m.team1) updateForPlayer(p, t1Win);
-        for (const p of m.team2) updateForPlayer(p, t2Win);
-      }
-
-      return stats;
-    });
-
     const updatedLocalPlayers = applyMatchResults(
-      matches,
+      currentMatches,
       winners,
       players,
       settings.kFactor
@@ -347,7 +306,7 @@ export default function App() {
       attendance_count: p.attendance_count,
       win_streak: p.win_streak,
       loss_streak: p.loss_streak,
-      last_seen_at: p.last_seen_at,
+      last_seen_at: p.last_seen_at
     }));
 
     try {
@@ -355,9 +314,9 @@ export default function App() {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey,
+          "X-Admin-Key": adminKey
         },
-        body: JSON.stringify({ updates }),
+        body: JSON.stringify({ updates })
       });
     } catch (err) {
       console.error(err);
@@ -366,7 +325,7 @@ export default function App() {
 
     // Write match results
     const resultsRows = [];
-    for (const m of matches) {
+    for (const m of currentMatches) {
       const result = winners[m.court];
       const t1Win = result === "team1";
       const t2Win = !t1Win;
@@ -380,7 +339,8 @@ export default function App() {
       for (const p of [...team1, ...team2]) {
         const before = p.elo_rating || 1000;
         const after =
-          updatedLocalPlayers.find((x) => x.id === p.id)?.elo_rating || before;
+          updatedLocalPlayers.find((x) => x.id === p.id)?.elo_rating ||
+          before;
         const delta = after - before;
 
         resultsRows.push({
@@ -396,7 +356,7 @@ export default function App() {
           elo_before: before,
           elo_after: after,
           elo_change: delta,
-          opponent_avg_elo: team1.includes(p) ? avg2 : avg1,
+          opponent_avg_elo: team1.includes(p) ? avg2 : avg1
         });
       }
     }
@@ -406,18 +366,14 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Admin-Key": adminKey,
+          "X-Admin-Key": adminKey
         },
-        body: JSON.stringify({ results: resultsRows }),
+        body: JSON.stringify({ results: resultsRows })
       });
     } catch (err) {
       console.error(err);
       alert("Failed writing match results.");
     }
-
-    // Round stats
-    setCompletedRounds((r) => r + 1);
-    setTotalMatchesPlayed((m) => m + matches.length);
 
     // Next: transition before next round
     setRoundNumber((r) => r + 1);
@@ -437,7 +393,111 @@ export default function App() {
   }
 
   // --------------------------------------------------------
-  // SETTINGS MODAL
+  // END NIGHT
+  //  - Build summary & diagnostics
+  //  - Reset presence & bench info
+  //  - Show summary modal
+  //  - After closing, go to Home
+  // --------------------------------------------------------
+  async function endNight() {
+    const ok = window.confirm(
+      "End night, mark everyone as not present, and show session summary?"
+    );
+    if (!ok) return;
+
+    // Build session summary based on current player stats
+    const summaryPlayers = players
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        eloChange: Math.round(p.elo_delta_session || 0),
+        wins: p.wins || 0,
+        losses: p.losses || 0,
+        matches: p.matches_played || 0
+      }))
+      .filter(
+        (p) =>
+          p.matches > 0 ||
+          p.wins > 0 ||
+          p.losses > 0 ||
+          p.eloChange !== 0
+      )
+      .sort((a, b) => b.eloChange - a.eloChange);
+
+    const totalPlayers = players.length;
+    const playersWhoPlayed = summaryPlayers.length;
+    const roundsCompleted =
+      roundNumber > 1 ? roundNumber - (phase === "idle" ? 1 : 0) : 0;
+
+    const benchCounts = players.map((p) => p.bench_count || 0);
+    const maxBench = benchCounts.length ? Math.max(...benchCounts) : 0;
+    const avgBench =
+      benchCounts.length
+        ? benchCounts.reduce((a, b) => a + b, 0) / benchCounts.length
+        : 0;
+
+    const diagnostics = {
+      totalPlayers,
+      playersWhoPlayed,
+      roundsCompleted,
+      maxBenchCount: maxBench,
+      avgBenchCount: Number(avgBench.toFixed(2)),
+      settingsSnapshot: { ...settings }
+    };
+
+    setSummaryData({ players: summaryPlayers });
+    setDiagnosticsData(diagnostics);
+    setSummaryOpen(true);
+
+    // Reset presence / bench / round info in backend
+    const resetUpdates = players.map((p) => ({
+      id: p.id,
+      is_present: false,
+      bench_count: 0,
+      last_played_round: 0,
+      elo_delta_session: 0
+    }));
+
+    try {
+      await fetch(API_PLAYERS, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Admin-Key": adminKey
+        },
+        body: JSON.stringify({ updates: resetUpdates })
+      });
+    } catch (err) {
+      console.error(err);
+      alert("Failed to reset players at end of night.");
+    }
+
+    // Reset local state
+    const locallyResetPlayers = players.map((p) => ({
+      ...p,
+      is_present: false,
+      bench_count: 0,
+      last_played_round: 0,
+      elo_delta_session: 0
+    }));
+
+    setPlayers(locallyResetPlayers);
+    setPresent([]);
+    setBenched([]);
+    setCurrentMatches([]);
+    setPhase("idle");
+    setRoundNumber(1);
+    setAttendanceSet(new Set());
+    setWinners({});
+  }
+
+  function closeSummaryModal() {
+    setSummaryOpen(false);
+    setTab("home");
+  }
+
+  // --------------------------------------------------------
+  // SETTINGS MODAL OPEN/CLOSE
   // --------------------------------------------------------
   function openSettings() {
     setSettingsOpen(true);
@@ -445,144 +505,6 @@ export default function App() {
 
   function closeSettings() {
     setSettingsOpen(false);
-  }
-
-  // --------------------------------------------------------
-  // BUILD SESSION SUMMARY + SYSTEM DIAGNOSTICS
-  // --------------------------------------------------------
-  function buildSessionSummary() {
-    const totalPlayers = players.length;
-    const uniqueParticipants = attendanceSet.size;
-    const rounds = completedRounds;
-    const matches = totalMatchesPlayed;
-
-    const statsEntries = Object.entries(sessionStats);
-    const playersById = new Map(players.map((p) => [p.id, p]));
-
-    const perPlayer = statsEntries.map(([id, s]) => {
-      const p = playersById.get(id);
-      const eloDelta = p?.elo_delta_session || 0;
-      const benchCount = p?.bench_count || s.benchCount || 0;
-      return {
-        id,
-        name: p?.name || "Unknown",
-        matches: s.matches,
-        wins: s.wins,
-        losses: s.losses,
-        eloDelta,
-        benchCount,
-      };
-    });
-
-    const topImproved = perPlayer
-      .slice()
-      .sort((a, b) => b.eloDelta - a.eloDelta)
-      .slice(0, 5);
-
-    const topActive = perPlayer
-      .slice()
-      .sort((a, b) => b.matches - a.matches)
-      .slice(0, 5);
-
-    const totalEloChange = perPlayer.reduce(
-      (sum, p) => sum + p.eloDelta,
-      0
-    );
-    const avgEloChange =
-      uniqueParticipants > 0 ? totalEloChange / uniqueParticipants : 0;
-
-    const maxBench = Math.max(
-      0,
-      ...players.map((p) => p.bench_count || 0)
-    );
-
-    const mostBenched = perPlayer
-      .slice()
-      .sort((a, b) => b.benchCount - a.benchCount)
-      .slice(0, 5);
-
-    const neverBenchedCount = perPlayer.filter(
-      (p) => (p.benchCount || 0) === 0 && attendanceSet.has(p.id)
-    ).length;
-
-    return {
-      totalPlayers,
-      uniqueParticipants,
-      rounds,
-      matches,
-      avgEloChange,
-      maxBench,
-      mostBenched,
-      neverBenchedCount,
-      topImproved,
-      topActive,
-    };
-  }
-
-  // --------------------------------------------------------
-  // END NIGHT
-  // --------------------------------------------------------
-  async function endNight() {
-    // Stop timers
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (transitionRef.current) clearInterval(transitionRef.current);
-
-    // Build summary BEFORE we reset anything
-    const summary = buildSessionSummary();
-    setSessionSummary(summary);
-    setShowSummaryModal(true);
-
-    // Reset players (mark unpresent, reset per-session counters)
-    const resetPlayers = players.map((p) => ({
-      ...p,
-      is_present: false,
-      bench_count: 0,
-      last_played_round: 0,
-      elo_delta_session: 0,
-    }));
-
-    setPlayers(resetPlayers);
-    setPresent([]);
-    setBenched([]);
-    setCurrentMatches([]);
-    setPhase("idle");
-    setRoundNumber(1);
-    setAttendanceSet(new Set());
-    setCompletedRounds(0);
-    setTotalMatchesPlayed(0);
-    setSessionStats({});
-    setWinners({});
-    setRoundTimeLeft(settings.roundDuration);
-    setTransitionTime(settings.transitionTime);
-    setIsPaused(false);
-
-    // Persist reset to backend
-    try {
-      await fetch(API_PLAYERS, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Admin-Key": adminKey,
-        },
-        body: JSON.stringify({
-          updates: resetPlayers.map((p) => ({
-            id: p.id,
-            is_present: false,
-            bench_count: 0,
-            last_played_round: 0,
-            elo_delta_session: 0,
-          })),
-        }),
-      });
-    } catch (err) {
-      console.error(err);
-      alert("Failed to reset players at end of night.");
-    }
-  }
-
-  function closeSummaryModal() {
-    setShowSummaryModal(false);
-    setTab("home");
   }
 
   // --------------------------------------------------------
@@ -605,10 +527,7 @@ export default function App() {
             Player Management
           </button>
 
-          <button
-            className="btn home-btn"
-            onClick={() => setTab("leaderboards")}
-          >
+          <button className="btn home-btn" onClick={() => setTab("leaderboards")}>
             Leaderboards
           </button>
 
@@ -739,7 +658,6 @@ export default function App() {
             <div className="transition-container">
               <h3>Next Round Begins Soon…</h3>
 
-              {/* Show upcoming matches */}
               <div className="courts-grid">
                 {currentMatches.map((match) => (
                   <div key={match.court} className="court-card upcoming">
@@ -790,7 +708,6 @@ export default function App() {
                   <div key={match.court} className="court-card">
                     <div className="court-title">Court {match.court}</div>
 
-                    {/* Team 1 */}
                     <div className="team-box">
                       {match.team1.map((p) => (
                         <div key={p.id} className="player-chip">
@@ -801,7 +718,6 @@ export default function App() {
 
                     <div className="vs-line">vs</div>
 
-                    {/* Team 2 */}
                     <div className="team-box">
                       {match.team2.map((p) => (
                         <div key={p.id} className="player-chip">
@@ -844,7 +760,6 @@ export default function App() {
                     <div key={match.court} className="court-card winner-mode">
                       <div className="court-title">Court {match.court}</div>
 
-                      {/* TEAM 1 CLICK AREA */}
                       <div
                         className={
                           "team-box clickable " +
@@ -865,7 +780,6 @@ export default function App() {
 
                       <div className="vs-line">vs</div>
 
-                      {/* TEAM 2 CLICK AREA */}
                       <div
                         className={
                           "team-box clickable " +
@@ -888,7 +802,6 @@ export default function App() {
                 })}
               </div>
 
-              {/* Confirm button */}
               <div className="winner-submit-area">
                 <button
                   className={
@@ -937,7 +850,6 @@ export default function App() {
             </div>
 
             <div className="modal-body">
-              {/* Round Duration (minutes) */}
               <div className="setting-row">
                 <label>Round Duration (minutes)</label>
                 <input
@@ -950,13 +862,12 @@ export default function App() {
                     const seconds = Math.max(60, mins * 60);
                     saveSettings({
                       ...settings,
-                      roundDuration: seconds,
+                      roundDuration: seconds
                     });
                   }}
                 />
               </div>
 
-              {/* Warning Time (seconds) */}
               <div className="setting-row">
                 <label>Warning Time (seconds)</label>
                 <input
@@ -968,13 +879,12 @@ export default function App() {
                     const sec = Math.max(0, Number(e.target.value) || 0);
                     saveSettings({
                       ...settings,
-                      warningTime: sec,
+                      warningTime: sec
                     });
                   }}
                 />
               </div>
 
-              {/* Transition Time (seconds) */}
               <div className="setting-row">
                 <label>Transition Time (seconds)</label>
                 <input
@@ -986,13 +896,12 @@ export default function App() {
                     const sec = Math.max(10, Number(e.target.value) || 10);
                     saveSettings({
                       ...settings,
-                      transitionTime: sec,
+                      transitionTime: sec
                     });
                   }}
                 />
               </div>
 
-              {/* Number of Courts */}
               <div className="setting-row">
                 <label>Courts Available</label>
                 <input
@@ -1008,13 +917,12 @@ export default function App() {
                     );
                     saveSettings({
                       ...settings,
-                      courtCount: courts,
+                      courtCount: courts
                     });
                   }}
                 />
               </div>
 
-              {/* ELO K-Factor */}
               <div className="setting-row">
                 <label>ELO K-Factor</label>
                 <input
@@ -1030,7 +938,7 @@ export default function App() {
                     );
                     saveSettings({
                       ...settings,
-                      kFactor: k,
+                      kFactor: k
                     });
                   }}
                 />
@@ -1046,86 +954,102 @@ export default function App() {
         </div>
       )}
 
-      {/* SESSION SUMMARY + SYSTEM DIAGNOSTICS MODAL */}
-      {showSummaryModal && sessionSummary && (
+      {/* SESSION SUMMARY + DIAGNOSTICS MODAL */}
+      {summaryOpen && (
         <div className="modal-backdrop">
-          <div className="modal">
+          <div className="modal large">
             <div className="modal-head">
-              <h3>Session Summary & Diagnostics</h3>
+              <h3>Session Summary & System Diagnostics</h3>
+              <button className="close-btn" onClick={closeSummaryModal}>
+                ×
+              </button>
             </div>
 
             <div className="modal-body">
-              {/* Session Summary */}
               <div className="panel glass">
                 <h4>Session Summary</h4>
-                <p>Rounds completed: {sessionSummary.rounds}</p>
-                <p>Total matches played: {sessionSummary.matches}</p>
-                <p>
-                  Unique players who played: {sessionSummary.uniqueParticipants}
-                </p>
-                <p>
-                  Average ELO change:&nbsp;
-                  {sessionSummary.avgEloChange.toFixed(1)}
-                </p>
-
-                {sessionSummary.topImproved.length > 0 && (
-                  <>
-                    <h5>Top ELO Gains</h5>
-                    <ul>
-                      {sessionSummary.topImproved.map((p) => (
-                        <li key={p.id}>
-                          {p.name}: {p.eloDelta > 0 ? "+" : ""}
-                          {p.eloDelta.toFixed(0)}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-
-                {sessionSummary.topActive.length > 0 && (
-                  <>
-                    <h5>Most Active (by matches)</h5>
-                    <ul>
-                      {sessionSummary.topActive.map((p) => (
-                        <li key={p.id}>
-                          {p.name}: {p.matches} match
-                          {p.matches !== 1 ? "es" : ""}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
+                <div className="table-wrap">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Player</th>
+                        <th>Matches</th>
+                        <th>Wins</th>
+                        <th>Losses</th>
+                        <th>ELO Δ (Session)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summaryData && summaryData.players.length > 0 ? (
+                        summaryData.players.map((p) => (
+                          <tr key={p.id}>
+                            <td>{p.name}</td>
+                            <td>{p.matches}</td>
+                            <td>{p.wins}</td>
+                            <td>{p.losses}</td>
+                            <td>{p.eloChange}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={5}>No matches recorded this session.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
-              {/* System Diagnostics */}
-              <div className="panel glass" style={{ marginTop: "12px" }}>
+              <div className="panel glass">
                 <h4>System Diagnostics</h4>
-                <p>Total players in system: {sessionSummary.totalPlayers}</p>
-                <p>
-                  Players who played and were never benched:{" "}
-                  {sessionSummary.neverBenchedCount}
-                </p>
-                <p>Max bench_count seen: {sessionSummary.maxBench}</p>
-
-                {sessionSummary.mostBenched.length > 0 && (
-                  <>
-                    <h5>Most Benched</h5>
-                    <ul>
-                      {sessionSummary.mostBenched.map((p) => (
-                        <li key={p.id}>
-                          {p.name}: {p.benchCount} time
-                          {p.benchCount !== 1 ? "s" : ""}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
+                <ul className="diagnostics-list">
+                  <li>
+                    Total Players in System:{" "}
+                    {diagnosticsData?.totalPlayers ?? 0}
+                  </li>
+                  <li>
+                    Players Who Played This Session:{" "}
+                    {diagnosticsData?.playersWhoPlayed ?? 0}
+                  </li>
+                  <li>
+                    Rounds Completed (approx):{" "}
+                    {diagnosticsData?.roundsCompleted ?? 0}
+                  </li>
+                  <li>
+                    Max Bench Count:{" "}
+                    {diagnosticsData?.maxBenchCount ?? 0}
+                  </li>
+                  <li>
+                    Avg Bench Count:{" "}
+                    {diagnosticsData?.avgBenchCount ?? 0}
+                  </li>
+                  <li>
+                    Courts Used:{" "}
+                    {diagnosticsData?.settingsSnapshot?.courtCount ?? 0}
+                  </li>
+                  <li>
+                    Round Duration (sec):{" "}
+                    {diagnosticsData?.settingsSnapshot?.roundDuration ?? 0}
+                  </li>
+                  <li>
+                    Transition Time (sec):{" "}
+                    {diagnosticsData?.settingsSnapshot?.transitionTime ?? 0}
+                  </li>
+                  <li>
+                    Warning Time (sec):{" "}
+                    {diagnosticsData?.settingsSnapshot?.warningTime ?? 0}
+                  </li>
+                  <li>
+                    ELO K-Factor:{" "}
+                    {diagnosticsData?.settingsSnapshot?.kFactor ?? 0}
+                  </li>
+                </ul>
               </div>
             </div>
 
             <div className="modal-foot">
               <button className="btn" onClick={closeSummaryModal}>
-                Close &amp; Return Home
+                Close & Return Home
               </button>
             </div>
           </div>
@@ -1141,9 +1065,7 @@ export default function App() {
             </div>
 
             <div className="modal-body">
-              <p>
-                Enter admin key to enable editing, resets, and presence updates.
-              </p>
+              <p>Enter admin key to enable editing, resets, and presence updates.</p>
               <input
                 className="input"
                 type="password"
