@@ -1,5 +1,5 @@
 // src/logic.js
-// FLOMINTON ELO + MATCHMAKING LOGIC (v2)
+// FLOMINTON ELO + MATCHMAKING LOGIC (v2.1)
 //
 // Exports:
 //  - selectPlayersForRound(presentPlayers, roundNumber, lastRoundBenchedSet, courtCount)
@@ -11,6 +11,7 @@
 //
 // Notes:
 //  - ELO-based grouping using a window starting at 200 and expanding up to 500
+//  - Small random jitter each round so groups (and courts) vary even with same ELOs
 //  - Balanced pairing inside each quad (low+high vs mid+mid)
 //  - ELO update uses a K-factor (configurable from Settings)
 //  - Win-streak bonus (up to +20% gain)
@@ -27,7 +28,7 @@
    
    const BASE_ELO = 1000;
    
-   const REMATCH_MEMORY = 10; // not heavily used now, but kept for future teammate tracking
+   const REMATCH_MEMORY = 10; // kept for future teammate-history use
    
    const by = (fn) => (a, b) => {
      const va = fn(a);
@@ -40,7 +41,7 @@
    function chunk(arr, size) {
      const out = [];
      for (let i = 0; i < arr.length; i += size) {
-       out.push(arr.slice(i + 0, i + size));
+       out.push(arr.slice(i, i + size));
      }
      return out;
    }
@@ -53,7 +54,7 @@
    }
    
    function trimHistory(map, maxSize) {
-     // placeholder for future more complex teammate-history limiting
+     // placeholder for future teammate-history limiting
      return map;
    }
    
@@ -65,7 +66,9 @@
      const s = Math.max(0, Math.floor(seconds));
      const m = Math.floor(s / 60);
      const r = s % 60;
-     return `${m.toString().padStart(2, "0")}:${r.toString().padStart(2, "0")}`;
+     return `${m.toString().padStart(2, "0")}:${r
+       .toString()
+       .padStart(2, "0")}`;
    }
    
    /* ============================================================
@@ -88,6 +91,7 @@
    ) {
      const neededPlayers = courtCount * 4;
      if (presentPlayers.length <= neededPlayers) {
+       // Everyone plays; no one is benched
        return {
          playing: presentPlayers.slice(),
          benched: [],
@@ -115,8 +119,8 @@
      const playing = sorted.slice(0, neededPlayers);
      const benched = sorted.slice(neededPlayers);
    
-     // Update bench_count + last_played_round in playing/benched arrays only.
-     // (App is responsible for persisting these if desired.)
+     // Update bench_count + last_played_round in the returned objects only.
+     // (App is responsible for persisting these into the main players array.)
      for (const p of playing) {
        p.last_played_round = roundNumber;
      }
@@ -128,57 +132,77 @@
    }
    
    /* ============================================================
-      GROUPING ENGINE — ELO WINDOW MODE
+      GROUPING ENGINE — ELO WINDOW MODE WITH JITTER
       ============================================================ */
    /**
     * Build matches (courts) from selected players.
     * Input array should have at least 4 players.
     *
-    *  - Groups players into quads using ELO window rules
+    *  - Adds a small random jitter to each player’s ELO every call
+    *  - Groups players into quads using ELO window rules on jittered ratings
     *  - Splits each quad into balanced teams (low+high vs mid+mid)
     *  - Applies basic duplicate-player safety
     *
-    * teammateHistory param is kept for future enhancements; currently not used.
+    * teammateHistory param is kept for future enhancements; currently not
+    * used to avoid or enforce particular pairings.
     */
-   export function buildMatchesFrom16(players, teammateHistory = new Map(), courtCount = 4) {
+   export function buildMatchesFrom16(
+     players,
+     teammateHistory = new Map(),
+     courtCount = 4
+   ) {
      if (!players || players.length < 4) return [];
    
-     // Sort by ELO ascending
-     const sorted = players
-       .map((p) => ({ ...p, elo_rating: p.elo_rating || BASE_ELO }))
-       .sort(by((p) => p.elo_rating));
+     // Add a small random jitter so groupings vary across rounds,
+     // while still being roughly ELO-based.
+     //
+     // _jRating = elo_rating + random(-20, 20)
+     const jittered = players
+       .map((p) => {
+         const elo = p.elo_rating || BASE_ELO;
+         const jitter = (Math.random() - 0.5) * 40; // ±20
+         return {
+           ...p,
+           elo_rating: elo,
+           _jRating: elo + jitter,
+         };
+       })
+       .sort(by((p) => p._jRating));
    
-     const maxCourtsPossible = Math.floor(sorted.length / 4);
+     const maxCourtsPossible = Math.floor(jittered.length / 4);
      const totalCourts = Math.min(courtCount, maxCourtsPossible);
    
      if (totalCourts <= 0) return [];
    
-     // Try grouping with increasing ELO window
+     // Try grouping with increasing ELO window (applied on jittered rating)
      let groups = [];
      for (
        let window = START_ELO_WINDOW;
        window <= MAX_ELO_WINDOW;
        window += ELO_WINDOW_STEP
      ) {
-       groups = makeEloWindowGroups(sorted, totalCourts, window);
+       groups = makeEloWindowGroups(jittered, totalCourts, window);
        if (groups.length === totalCourts) break;
      }
    
      // If grouping still fails, fallback to simple chunking
      if (groups.length !== totalCourts) {
-       const fallback = sorted.slice(0, totalCourts * 4);
+       const fallback = jittered.slice(0, totalCourts * 4);
        groups = chunk(fallback, 4);
      }
    
      // Duplicate-player safety check
-     groups = ensureUniqueAssignments(groups, players);
+     groups = ensureUniqueAssignments(groups, jittered);
    
      // Build matches with balanced pairing
      const matches = [];
      let courtNo = 1;
    
      for (const g of groups) {
-       const quad = g.slice().sort(by((p) => p.elo_rating));
+       // sort quad by actual elo_rating (without jitter) for pairing logic
+       const quad = g
+         .slice()
+         .sort(by((p) => p.elo_rating || BASE_ELO));
    
        const team1 = [quad[0], quad[3]];
        const team2 = [quad[1], quad[2]];
@@ -187,12 +211,17 @@
        addPair(team2[0], team2[1], teammateHistory);
        trimHistory(teammateHistory, REMATCH_MEMORY);
    
+       const avg1 =
+         (team1[0].elo_rating + team1[1].elo_rating) / 2;
+       const avg2 =
+         (team2[0].elo_rating + team2[1].elo_rating) / 2;
+   
        matches.push({
          court: courtNo++,
          team1,
          team2,
-         avg1: (team1[0].elo_rating + team1[1].elo_rating) / 2,
-         avg2: (team2[0].elo_rating + team2[1].elo_rating) / 2,
+         avg1,
+         avg2,
        });
      }
    
@@ -201,7 +230,7 @@
    
    /**
     * Try to build `courtCount` groups of 4 players each
-    * such that each group’s spread <= window.
+    * such that each group’s jittered spread <= window.
     */
    function makeEloWindowGroups(sortedPlayers, courtCount, window) {
      const used = new Set();
@@ -211,25 +240,25 @@
        if (used.has(i)) continue;
    
        const root = sortedPlayers[i];
-       const minElo = root.elo_rating;
+       const minRating = root._jRating;
        const picks = [i];
    
        // forward
        for (let j = i + 1; j < sortedPlayers.length && picks.length < 4; j++) {
          if (used.has(j)) continue;
          const candidate = sortedPlayers[j];
-         if (candidate.elo_rating - minElo <= window) {
+         if (candidate._jRating - minRating <= window) {
            picks.push(j);
          } else {
            break;
          }
        }
    
-       // backward (fill remaining from the top of the list)
+       // backward fill if still not 4 (from top)
        for (let j = sortedPlayers.length - 1; j > i && picks.length < 4; j--) {
          if (used.has(j)) continue;
          const candidate = sortedPlayers[j];
-         if (candidate.elo_rating - minElo <= window) {
+         if (candidate._jRating - minRating <= window) {
            picks.push(j);
          }
        }
@@ -256,7 +285,9 @@
    
      if (unique.size === ids.length) return groups;
    
-     console.warn("[logic] Duplicate-player detected — applying fallback grouping.");
+     console.warn(
+       "[logic] Duplicate-player detected — applying fallback grouping."
+     );
    
      const totalPlayers = groups.length * 4;
      const slice = originalPlayers.slice(0, totalPlayers).map((p) => ({
@@ -335,7 +366,12 @@
     * players: full players array (from DB / app state)
     * kFactor: numeric K value from settings
     */
-   export function applyMatchResults(matches, winners, players, kFactor = 32) {
+   export function applyMatchResults(
+     matches,
+     winners,
+     players,
+     kFactor = 32
+   ) {
      const updated = players.map((p) => ({
        ...p,
        elo_rating: p.elo_rating || BASE_ELO,
@@ -349,7 +385,9 @@
        attendance_count: p.attendance_count || 0,
      }));
    
-     const indexById = Object.fromEntries(updated.map((p, idx) => [p.id, idx]));
+     const indexById = Object.fromEntries(
+       updated.map((p, idx) => [p.id, idx])
+     );
    
      for (const match of matches) {
        const decision = winners[match.court];
@@ -444,12 +482,18 @@
     * Returns:
     *   { updatedPlayers, updatedAttendanceSet }
     */
-   export function applyAttendanceForSession(matches, players, attendedSet) {
+   export function applyAttendanceForSession(
+     matches,
+     players,
+     attendedSet
+   ) {
      const updated = players.map((p) => ({
        ...p,
        attendance_count: p.attendance_count || 0,
      }));
-     const indexById = Object.fromEntries(updated.map((p, idx) => [p.id, idx]));
+     const indexById = Object.fromEntries(
+       updated.map((p, idx) => [p.id, idx])
+     );
    
      const appearingNow = new Set();
    
