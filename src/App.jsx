@@ -1167,6 +1167,7 @@ export default function App() {
 
       {tab === TABS.SESSION && (
         <SessionTab
+          isAdmin={isAdmin}
           sessionActive={sessionActive}
           running={running}
           phase={phase}
@@ -1480,6 +1481,7 @@ function PlayerManagementTab({
 }
 
 function SessionTab({
+  isAdmin,
   sessionActive,
   running,
   phase,
@@ -1630,6 +1632,7 @@ function SessionTab({
                 player={p}
                 onClick={() => onTogglePresent(p)}
                 present
+                showBenchCount={isAdmin}
               />
             ))}
           </div>
@@ -2090,7 +2093,7 @@ function SettingsTab({
   );
 }
 
-function PlayerRow({ player, onClick, present = false }) {
+function PlayerRow({ player, onClick, present = false, showBenchCount = false }) {
   return (
     <div className={`row-player ${present ? 'present' : ''}`} onClick={onClick}>
       <span className="name">{player.name}</span>
@@ -2098,6 +2101,7 @@ function PlayerRow({ player, onClick, present = false }) {
         <span className={`pill sm ${player.gender === 'F' ? 'female' : 'male'}`}>{player.gender}</span>
         <span>ELO {player.elo_rating}</span>
         <span>T{displayTier(player)}</span>
+        {showBenchCount ? <span>Benched {Number(player.bench_count || 0)}</span> : null}
       </span>
     </div>
   );
