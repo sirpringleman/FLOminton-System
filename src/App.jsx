@@ -6,7 +6,6 @@ import {
   displayTier,
   formatTime,
   getMatchMode,
-  scoreForMatch,
   selectPlayersForRound,
   setMatchMode,
 } from './logic';
@@ -207,7 +206,7 @@ function useBeep(volumeRef) {
   return { beep };
 }
 
-/* ================= App ================= */
+/* ================= App constants ================= */
 
 const TABS = {
   HOME: 'home',
@@ -223,6 +222,8 @@ const PHASES = {
   MATCH: 'match',
   TRANSITION: 'transition',
 };
+
+/* ================= Main App ================= */
 
 export default function App() {
   const [players, setPlayers] = useState([]);
@@ -388,7 +389,7 @@ export default function App() {
         await resolveCurrentRoundAndAdvance();
       }
     })();
-  }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds]);
+  }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds, beep]);
 
   /* ================= Session building ================= */
 
@@ -424,6 +425,7 @@ export default function App() {
     }
 
     const playingIds = new Set(playing.map((p) => p.id));
+    const benchedIds = new Set(nextBenched.map((p) => p.id));
 
     setPlayers((prev) =>
       prev.map((p) => {
@@ -434,7 +436,7 @@ export default function App() {
             last_played_round: nextRound,
           };
         }
-        if (nextBenched.find((b) => b.id === p.id)) {
+        if (benchedIds.has(p.id)) {
           return {
             ...p,
             bench_count: Number(p.bench_count || 0) + 1,
@@ -642,7 +644,12 @@ export default function App() {
   async function endSession() {
     const currentPlayers = playersRef.current;
 
-    const summary = buildSessionSummary(currentPlayers, sessionEloGainRef.current, sessionHistory, roundNumberRef.current);
+    const summary = buildSessionSummary(
+      currentPlayers,
+      sessionEloGainRef.current,
+      sessionHistory,
+      roundNumberRef.current
+    );
     setSessionSummary(summary);
 
     const bestSessionUpdates = currentPlayers.map((player) => {
@@ -834,537 +841,6 @@ export default function App() {
     alert('Settings saved.');
   }
 
-  /* ================= Views ================= */
-
-  function Navigation() {
-    return (
-      <div className="nav glass">
-        <button className={`nav-btn ${tab === TABS.HOME ? 'active' : ''}`} onClick={() => setTab(TABS.HOME)}>
-          Home
-        </button>
-        <button className={`nav-btn ${tab === TABS.PLAYERS ? 'active' : ''}`} onClick={() => setTab(TABS.PLAYERS)}>
-          Player Management
-        </button>
-        <button className={`nav-btn ${tab === TABS.SESSION ? 'active' : ''}`} onClick={() => setTab(TABS.SESSION)}>
-          Session
-        </button>
-        <button
-          className={`nav-btn ${tab === TABS.LEADERBOARD ? 'active' : ''}`}
-          onClick={() => setTab(TABS.LEADERBOARD)}
-        >
-          Leaderboard
-        </button>
-        <button
-          className={`nav-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
-          onClick={() => setTab(TABS.SETTINGS)}
-        >
-          Settings
-        </button>
-
-        <div className="nav-spacer" />
-
-        {isAdmin ? (
-          <button className="btn" onClick={adminLogout}>
-            Admin On
-          </button>
-        ) : (
-          <button className="btn" onClick={adminLogin}>
-            Admin
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  function HomeTab() {
-    return (
-      <div className="page">
-        <div className="hero glass">
-          <h1>The FLOminton System</h1>
-          <p className="muted">
-            Badminton matchmaking with fairness-based benching, live court assignment,
-            winner selection, and ELO updates.
-          </p>
-
-          <div className="hero-actions">
-            <button className="btn primary" onClick={() => setTab(TABS.SESSION)}>
-              Go to Session
-            </button>
-            <button className="btn" onClick={() => setTab(TABS.PLAYERS)}>
-              Player Management
-            </button>
-            <button className="btn" onClick={() => setTab(TABS.LEADERBOARD)}>
-              Leaderboard
-            </button>
-            <button className="btn" onClick={() => setTab(TABS.SETTINGS)}>
-              Settings
-            </button>
-          </div>
-        </div>
-
-        {sessionSummary && (
-          <div className="panel glass">
-            <div className="panel-head">
-              <h3>Last Session Summary</h3>
-            </div>
-
-            <div className="summary-grid">
-              <div className="summary-card">
-                <div className="summary-label">Rounds Played</div>
-                <div className="summary-value">{sessionSummary.rounds}</div>
-              </div>
-              <div className="summary-card">
-                <div className="summary-label">Matches Resolved</div>
-                <div className="summary-value">{sessionSummary.completedMatches}</div>
-              </div>
-              <div className="summary-card">
-                <div className="summary-label">No Result Matches</div>
-                <div className="summary-value">{sessionSummary.noResultMatches}</div>
-              </div>
-              <div className="summary-card">
-                <div className="summary-label">Top Session Gain</div>
-                <div className="summary-value">
-                  {sessionSummary.topGainName
-                    ? `${sessionSummary.topGainName} (${formatSigned(sessionSummary.topGain)})`
-                    : '—'}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  function PlayerManagementTab() {
-    return (
-      <div className="page">
-        <div className="panel glass">
-          <div className="panel-head">
-            <h3>Player Management</h3>
-            <div className="muted">{players.length} players</div>
-          </div>
-
-          <div className="admin-add-row">
-            <input
-              className="input"
-              placeholder="Player name"
-              value={newPlayerName}
-              onChange={(e) => setNewPlayerName(e.target.value)}
-            />
-            <select
-              className="input"
-              value={newPlayerGender}
-              onChange={(e) => setNewPlayerGender(e.target.value)}
-            >
-              <option value="M">M</option>
-              <option value="F">F</option>
-            </select>
-            <input
-              className="input"
-              type="number"
-              min="600"
-              max="2000"
-              step="1"
-              value={newPlayerElo}
-              onChange={(e) => setNewPlayerElo(Number(e.target.value))}
-            />
-            <button className="btn" onClick={addPlayer}>
-              Add Player
-            </button>
-            <button className="btn primary" onClick={saveAllPlayers}>
-              Save All
-            </button>
-          </div>
-
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Gender</th>
-                  <th>ELO</th>
-                  <th>Tier</th>
-                  <th>Wins</th>
-                  <th>Losses</th>
-                  <th>Matches</th>
-                  <th>Current Streak</th>
-                  <th>Best Session</th>
-                  <th>Present</th>
-                  <th>Delete</th>
-                </tr>
-              </thead>
-              <tbody>
-                {players
-                  .slice()
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((p) => (
-                    <tr key={p.id}>
-                      <td>
-                        <input
-                          className="input"
-                          value={p.name}
-                          onChange={(e) => updatePlayerLocal(p.id, 'name', e.target.value)}
-                        />
-                      </td>
-                      <td>
-                        <select
-                          className="input"
-                          value={p.gender}
-                          onChange={(e) => updatePlayerLocal(p.id, 'gender', e.target.value)}
-                        >
-                          <option value="M">M</option>
-                          <option value="F">F</option>
-                        </select>
-                      </td>
-                      <td>
-                        <input
-                          className="input"
-                          type="number"
-                          min="600"
-                          max="2200"
-                          value={p.elo_rating}
-                          onChange={(e) => updatePlayerLocal(p.id, 'elo_rating', Number(e.target.value))}
-                        />
-                      </td>
-                      <td className="center">{displayTier(p)}</td>
-                      <td className="center">{p.wins}</td>
-                      <td className="center">{p.losses}</td>
-                      <td className="center">{p.matches_played}</td>
-                      <td className="center">{formatSigned(p.current_streak)}</td>
-                      <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
-                      <td className="center">
-                        <input type="checkbox" checked={p.is_present} onChange={() => togglePresent(p)} />
-                      </td>
-                      <td className="center">
-                        <button className="btn danger" onClick={() => deletePlayer(p.id)}>
-                          ✕
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  function SessionTab() {
-    return (
-      <div className="page">
-        <div className="toolbar glass">
-          <div className="toolbar-left">
-            <button className="btn primary" onClick={startSession}>
-              Start Session
-            </button>
-            <button className="btn" onClick={pauseSession} disabled={!running}>
-              Pause
-            </button>
-            <button className="btn" onClick={resumeSession}>
-              Play / Resume
-            </button>
-            <button className="btn" onClick={nextRoundNow} disabled={!sessionActive}>
-              Force Next Round
-            </button>
-            <button className="btn danger" onClick={endSession} disabled={!sessionActive && roundNumber === 0}>
-              End Session
-            </button>
-          </div>
-
-          <div className="toolbar-right stack-right">
-            <div className={`phase-chip ${phase}`}>
-              {activePhaseLabel}
-            </div>
-            <div className={`time ${warningActive ? 'warn' : ''}`}>
-              Round {roundNumber || 0} • {formatTime(phaseRemaining)}
-            </div>
-          </div>
-        </div>
-
-        <div className="session-status-grid">
-          <div className="summary-card">
-            <div className="summary-label">Phase</div>
-            <div className="summary-value small">{activePhaseLabel}</div>
-          </div>
-          <div className="summary-card">
-            <div className="summary-label">Present</div>
-            <div className="summary-value">{presentPlayers.length}</div>
-          </div>
-          <div className="summary-card">
-            <div className="summary-label">Benched</div>
-            <div className="summary-value">{benched.length}</div>
-          </div>
-          <div className="summary-card">
-            <div className="summary-label">Mode</div>
-            <div className="summary-value small">
-              {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}
-            </div>
-          </div>
-        </div>
-
-        <div className="panel glass">
-          <div className="panel-head">
-            <h3>Matches</h3>
-            <div className="muted">
-              Stage 5: {preRoundSeconds}s • Match: {matchMinutes}m • Warning: {warningSeconds}s • Transition: {transitionSeconds}s
-            </div>
-          </div>
-
-          {matches.length === 0 ? (
-            <div className="muted p-12">No matches built yet.</div>
-          ) : (
-            <div className="courts-grid">
-              {matches.map((match) => (
-                <CourtCard
-                  key={match.court}
-                  match={match}
-                  phase={phase}
-                  selectedWinner={Number(winnerSelections[match.court] || 0)}
-                  onPickWinner={setWinner}
-                  onClearWinner={clearWinner}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="panel glass">
-          <div className="panel-head">
-            <h3>Benched Players</h3>
-          </div>
-
-          {benched.length === 0 ? (
-            <div className="muted p-8">No one benched this round.</div>
-          ) : (
-            <div className="bench-row">
-              {benched.map((p) => (
-                <div className="tag" key={p.id}>
-                  <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
-                  {p.name} <span className="muted">(ELO {p.elo_rating})</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="lists-grid">
-          <div className="list-col">
-            <div className="list-head">
-              All Players <span className="badge">{notPresentPlayers.length}</span>
-            </div>
-            <div className="list-box glass">
-              {notPresentPlayers.map((p) => (
-                <PlayerRow
-                  key={p.id}
-                  player={p}
-                  onClick={() => togglePresent(p)}
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="list-col">
-            <div className="list-head">
-              Present <span className="badge">{presentPlayers.length}</span>
-            </div>
-            <div className="list-box glass">
-              {presentPlayers.map((p) => (
-                <PlayerRow
-                  key={p.id}
-                  player={p}
-                  onClick={() => togglePresent(p)}
-                  present
-                />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  function LeaderboardTab() {
-    return (
-      <div className="page">
-        <div className="panel glass">
-          <div className="panel-head">
-            <h3>Leaderboard</h3>
-            <div className="muted">Lifetime stats</div>
-          </div>
-
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Name</th>
-                  <th>Gender</th>
-                  <th>ELO</th>
-                  <th>Tier</th>
-                  <th>Wins</th>
-                  <th>Losses</th>
-                  <th>Matches</th>
-                  <th>Win %</th>
-                  <th>Current Streak</th>
-                  <th>Best Session</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboard.map((p, index) => {
-                  const matchesPlayed = Number(p.matches_played || 0);
-                  const winPct = matchesPlayed
-                    ? ((Number(p.wins || 0) / matchesPlayed) * 100).toFixed(1)
-                    : '0.0';
-
-                  return (
-                    <tr key={p.id}>
-                      <td className="center">{index + 1}</td>
-                      <td>{p.name}</td>
-                      <td className="center">{p.gender}</td>
-                      <td className="center"><b>{p.elo_rating}</b></td>
-                      <td className="center">{displayTier(p)}</td>
-                      <td className="center">{p.wins}</td>
-                      <td className="center">{p.losses}</td>
-                      <td className="center">{p.matches_played}</td>
-                      <td className="center">{winPct}%</td>
-                      <td className="center">{formatSigned(p.current_streak)}</td>
-                      <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  function SettingsTab() {
-    return (
-      <div className="page">
-        <div className="panel glass">
-          <div className="panel-head">
-            <h3>Settings</h3>
-          </div>
-
-          <div className="settings-grid">
-            <div className="setting">
-              <label>Stage 1 Match Length (minutes)</label>
-              <input
-                className="input"
-                type="number"
-                min="3"
-                max="60"
-                value={matchMinutes}
-                onChange={(e) => setMatchMinutes(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Stage 2 Warning Threshold (seconds left)</label>
-              <input
-                className="input"
-                type="number"
-                min="5"
-                max="120"
-                value={warningSeconds}
-                onChange={(e) => setWarningSeconds(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Stage 3/4 Transition + Winner Selection (seconds)</label>
-              <input
-                className="input"
-                type="number"
-                min="10"
-                max="180"
-                value={transitionSeconds}
-                onChange={(e) => setTransitionSeconds(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Stage 5 New Match Beginning (seconds)</label>
-              <input
-                className="input"
-                type="number"
-                min="5"
-                max="180"
-                value={preRoundSeconds}
-                onChange={(e) => setPreRoundSeconds(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Courts Available</label>
-              <input
-                className="input"
-                type="number"
-                min="1"
-                max="12"
-                value={courtsCount}
-                onChange={(e) => setCourtsCount(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Default ELO K-Factor</label>
-              <input
-                className="input"
-                type="number"
-                min="8"
-                max="64"
-                value={kFactor}
-                onChange={(e) => setKFactor(Number(e.target.value))}
-              />
-            </div>
-
-            <div className="setting">
-              <label>Matchmaking Mode</label>
-              <select
-                className="input"
-                value={matchMode}
-                onChange={(e) => setMatchModeState(e.target.value)}
-              >
-                <option value={MATCH_MODES.WINDOW}>Window</option>
-                <option value={MATCH_MODES.BAND}>Band</option>
-              </select>
-            </div>
-
-            <div className="setting">
-              <label>Sound Volume (0–1)</label>
-              <input
-                className="input"
-                type="number"
-                min="0"
-                max="1"
-                step="0.05"
-                value={volume}
-                onChange={(e) => setVolume(Number(e.target.value))}
-              />
-            </div>
-          </div>
-
-          <div className="settings-note">
-            <div><b>Defaults locked from your latest clarification:</b></div>
-            <div>Stage 5 = 30s • Stage 1 = 10 mins • Stage 2 = 30s left • Stage 3/4 = 60s</div>
-            <div>No winner selected by end of transition = no rating change.</div>
-          </div>
-
-          <div className="right mt-12">
-            <button className="btn primary" onClick={saveSettings}>
-              Save Settings
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   if (loading) {
     return (
       <div className="page centered">
@@ -1375,18 +851,675 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Navigation />
+      <Navigation
+        tab={tab}
+        setTab={setTab}
+        isAdmin={isAdmin}
+        onAdminLogin={adminLogin}
+        onAdminLogout={adminLogout}
+      />
 
-      {tab === TABS.HOME && <HomeTab />}
-      {tab === TABS.PLAYERS && <PlayerManagementTab />}
-      {tab === TABS.SESSION && <SessionTab />}
-      {tab === TABS.LEADERBOARD && <LeaderboardTab />}
-      {tab === TABS.SETTINGS && <SettingsTab />}
+      {tab === TABS.HOME && <HomeTab sessionSummary={sessionSummary} setTab={setTab} />}
+      {tab === TABS.PLAYERS && (
+        <PlayerManagementTab
+          players={players}
+          isAdmin={isAdmin}
+          newPlayerName={newPlayerName}
+          setNewPlayerName={setNewPlayerName}
+          newPlayerGender={newPlayerGender}
+          setNewPlayerGender={setNewPlayerGender}
+          newPlayerElo={newPlayerElo}
+          setNewPlayerElo={setNewPlayerElo}
+          addPlayer={addPlayer}
+          saveAllPlayers={saveAllPlayers}
+          updatePlayerLocal={updatePlayerLocal}
+          deletePlayer={deletePlayer}
+          togglePresent={togglePresent}
+        />
+      )}
+      {tab === TABS.SESSION && (
+        <SessionTab
+          sessionActive={sessionActive}
+          running={running}
+          phase={phase}
+          phaseRemaining={phaseRemaining}
+          roundNumber={roundNumber}
+          activePhaseLabel={activePhaseLabel}
+          warningActive={warningActive}
+          preRoundSeconds={preRoundSeconds}
+          matchMinutes={matchMinutes}
+          warningSeconds={warningSeconds}
+          transitionSeconds={transitionSeconds}
+          matchMode={matchMode}
+          matches={matches}
+          winnerSelections={winnerSelections}
+          benched={benched}
+          presentPlayers={presentPlayers}
+          notPresentPlayers={notPresentPlayers}
+          onStartSession={startSession}
+          onPauseSession={pauseSession}
+          onResumeSession={resumeSession}
+          onNextRoundNow={nextRoundNow}
+          onEndSession={endSession}
+          onSetWinner={setWinner}
+          onClearWinner={clearWinner}
+          onTogglePresent={togglePresent}
+        />
+      )}
+      {tab === TABS.LEADERBOARD && <LeaderboardTab leaderboard={leaderboard} />}
+      {tab === TABS.SETTINGS && (
+        <SettingsTab
+          matchMinutes={matchMinutes}
+          setMatchMinutes={setMatchMinutes}
+          warningSeconds={warningSeconds}
+          setWarningSeconds={setWarningSeconds}
+          transitionSeconds={transitionSeconds}
+          setTransitionSeconds={setTransitionSeconds}
+          preRoundSeconds={preRoundSeconds}
+          setPreRoundSeconds={setPreRoundSeconds}
+          courtsCount={courtsCount}
+          setCourtsCount={setCourtsCount}
+          kFactor={kFactor}
+          setKFactor={setKFactor}
+          matchMode={matchMode}
+          setMatchModeState={setMatchModeState}
+          volume={volume}
+          setVolume={setVolume}
+          saveSettings={saveSettings}
+        />
+      )}
     </div>
   );
 }
 
-/* ================= Components ================= */
+/* ================= Extracted Components ================= */
+
+function Navigation({ tab, setTab, isAdmin, onAdminLogin, onAdminLogout }) {
+  return (
+    <div className="nav glass">
+      <button className={`nav-btn ${tab === TABS.HOME ? 'active' : ''}`} onClick={() => setTab(TABS.HOME)}>
+        Home
+      </button>
+      <button className={`nav-btn ${tab === TABS.PLAYERS ? 'active' : ''}`} onClick={() => setTab(TABS.PLAYERS)}>
+        Player Management
+      </button>
+      <button className={`nav-btn ${tab === TABS.SESSION ? 'active' : ''}`} onClick={() => setTab(TABS.SESSION)}>
+        Session
+      </button>
+      <button
+        className={`nav-btn ${tab === TABS.LEADERBOARD ? 'active' : ''}`}
+        onClick={() => setTab(TABS.LEADERBOARD)}
+      >
+        Leaderboard
+      </button>
+      <button
+        className={`nav-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
+        onClick={() => setTab(TABS.SETTINGS)}
+      >
+        Settings
+      </button>
+
+      <div className="nav-spacer" />
+
+      {isAdmin ? (
+        <button className="btn" onClick={onAdminLogout}>
+          Admin On
+        </button>
+      ) : (
+        <button className="btn" onClick={onAdminLogin}>
+          Admin
+        </button>
+      )}
+    </div>
+  );
+}
+
+function HomeTab({ sessionSummary, setTab }) {
+  return (
+    <div className="page">
+      <div className="hero glass">
+        <h1>The FLOminton System</h1>
+        <p className="muted">
+          Badminton matchmaking with fairness-based benching, live court assignment,
+          winner selection, and ELO updates.
+        </p>
+
+        <div className="hero-actions">
+          <button className="btn primary" onClick={() => setTab(TABS.SESSION)}>
+            Go to Session
+          </button>
+          <button className="btn" onClick={() => setTab(TABS.PLAYERS)}>
+            Player Management
+          </button>
+          <button className="btn" onClick={() => setTab(TABS.LEADERBOARD)}>
+            Leaderboard
+          </button>
+          <button className="btn" onClick={() => setTab(TABS.SETTINGS)}>
+            Settings
+          </button>
+        </div>
+      </div>
+
+      {sessionSummary && (
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Last Session Summary</h3>
+          </div>
+
+          <div className="summary-grid">
+            <div className="summary-card">
+              <div className="summary-label">Rounds Played</div>
+              <div className="summary-value">{sessionSummary.rounds}</div>
+            </div>
+            <div className="summary-card">
+              <div className="summary-label">Matches Resolved</div>
+              <div className="summary-value">{sessionSummary.completedMatches}</div>
+            </div>
+            <div className="summary-card">
+              <div className="summary-label">No Result Matches</div>
+              <div className="summary-value">{sessionSummary.noResultMatches}</div>
+            </div>
+            <div className="summary-card">
+              <div className="summary-label">Top Session Gain</div>
+              <div className="summary-value">
+                {sessionSummary.topGainName
+                  ? `${sessionSummary.topGainName} (${formatSigned(sessionSummary.topGain)})`
+                  : '—'}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PlayerManagementTab({
+  players,
+  isAdmin,
+  newPlayerName,
+  setNewPlayerName,
+  newPlayerGender,
+  setNewPlayerGender,
+  newPlayerElo,
+  setNewPlayerElo,
+  addPlayer,
+  saveAllPlayers,
+  updatePlayerLocal,
+  deletePlayer,
+  togglePresent,
+}) {
+  return (
+    <div className="page">
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Player Management</h3>
+          <div className="muted">{players.length} players</div>
+        </div>
+
+        <div className="admin-add-row">
+          <input
+            className="input"
+            placeholder="Player name"
+            value={newPlayerName}
+            onChange={(e) => setNewPlayerName(e.target.value)}
+          />
+          <select
+            className="input"
+            value={newPlayerGender}
+            onChange={(e) => setNewPlayerGender(e.target.value)}
+          >
+            <option value="M">M</option>
+            <option value="F">F</option>
+          </select>
+          <input
+            className="input"
+            type="number"
+            min="600"
+            max="2000"
+            step="1"
+            value={newPlayerElo}
+            onChange={(e) => setNewPlayerElo(Number(e.target.value))}
+          />
+          <button className="btn" onClick={addPlayer}>
+            Add Player
+          </button>
+          <button className="btn primary" onClick={saveAllPlayers}>
+            Save All
+          </button>
+        </div>
+
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Gender</th>
+                <th>ELO</th>
+                <th>Tier</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Matches</th>
+                <th>Current Streak</th>
+                <th>Best Session</th>
+                <th>Present</th>
+                <th>Delete</th>
+              </tr>
+            </thead>
+            <tbody>
+              {players
+                .slice()
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((p) => (
+                  <tr key={p.id}>
+                    <td>
+                      <input
+                        className="input"
+                        value={p.name}
+                        onChange={(e) => updatePlayerLocal(p.id, 'name', e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <select
+                        className="input"
+                        value={p.gender}
+                        onChange={(e) => updatePlayerLocal(p.id, 'gender', e.target.value)}
+                      >
+                        <option value="M">M</option>
+                        <option value="F">F</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        type="number"
+                        min="600"
+                        max="2200"
+                        value={p.elo_rating}
+                        onChange={(e) => updatePlayerLocal(p.id, 'elo_rating', Number(e.target.value))}
+                      />
+                    </td>
+                    <td className="center">{displayTier(p)}</td>
+                    <td className="center">{p.wins}</td>
+                    <td className="center">{p.losses}</td>
+                    <td className="center">{p.matches_played}</td>
+                    <td className="center">{formatSigned(p.current_streak)}</td>
+                    <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
+                    <td className="center">
+                      <input type="checkbox" checked={p.is_present} onChange={() => togglePresent(p)} />
+                    </td>
+                    <td className="center">
+                      <button className="btn danger" onClick={() => deletePlayer(p.id)}>
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionTab({
+  sessionActive,
+  running,
+  phase,
+  phaseRemaining,
+  roundNumber,
+  activePhaseLabel,
+  warningActive,
+  preRoundSeconds,
+  matchMinutes,
+  warningSeconds,
+  transitionSeconds,
+  matchMode,
+  matches,
+  winnerSelections,
+  benched,
+  presentPlayers,
+  notPresentPlayers,
+  onStartSession,
+  onPauseSession,
+  onResumeSession,
+  onNextRoundNow,
+  onEndSession,
+  onSetWinner,
+  onClearWinner,
+  onTogglePresent,
+}) {
+  return (
+    <div className="page">
+      <div className="toolbar glass">
+        <div className="toolbar-left">
+          <button className="btn primary" onClick={onStartSession}>
+            Start Session
+          </button>
+          <button className="btn" onClick={onPauseSession} disabled={!running}>
+            Pause
+          </button>
+          <button className="btn" onClick={onResumeSession}>
+            Play / Resume
+          </button>
+          <button className="btn" onClick={onNextRoundNow} disabled={!sessionActive}>
+            Force Next Round
+          </button>
+          <button className="btn danger" onClick={onEndSession} disabled={!sessionActive && roundNumber === 0}>
+            End Session
+          </button>
+        </div>
+
+        <div className="toolbar-right stack-right">
+          <div className={`phase-chip ${phase}`}>
+            {activePhaseLabel}
+          </div>
+          <div className={`time ${warningActive ? 'warn' : ''}`}>
+            Round {roundNumber || 0} • {formatTime(phaseRemaining)}
+          </div>
+        </div>
+      </div>
+
+      <div className="session-status-grid">
+        <div className="summary-card">
+          <div className="summary-label">Phase</div>
+          <div className="summary-value small">{activePhaseLabel}</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-label">Present</div>
+          <div className="summary-value">{presentPlayers.length}</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-label">Benched</div>
+          <div className="summary-value">{benched.length}</div>
+        </div>
+        <div className="summary-card">
+          <div className="summary-label">Mode</div>
+          <div className="summary-value small">
+            {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}
+          </div>
+        </div>
+      </div>
+
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Matches</h3>
+          <div className="muted">
+            Stage 5: {preRoundSeconds}s • Match: {matchMinutes}m • Warning: {warningSeconds}s • Transition: {transitionSeconds}s
+          </div>
+        </div>
+
+        {matches.length === 0 ? (
+          <div className="muted p-12">No matches built yet.</div>
+        ) : (
+          <div className="courts-grid">
+            {matches.map((match) => (
+              <CourtCard
+                key={match.court}
+                match={match}
+                phase={phase}
+                selectedWinner={Number(winnerSelections[match.court] || 0)}
+                onPickWinner={onSetWinner}
+                onClearWinner={onClearWinner}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Benched Players</h3>
+        </div>
+
+        {benched.length === 0 ? (
+          <div className="muted p-8">No one benched this round.</div>
+        ) : (
+          <div className="bench-row">
+            {benched.map((p) => (
+              <div className="tag" key={p.id}>
+                <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                {p.name} <span className="muted">(ELO {p.elo_rating})</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="lists-grid">
+        <div className="list-col">
+          <div className="list-head">
+            All Players <span className="badge">{notPresentPlayers.length}</span>
+          </div>
+          <div className="list-box glass">
+            {notPresentPlayers.map((p) => (
+              <PlayerRow
+                key={p.id}
+                player={p}
+                onClick={() => onTogglePresent(p)}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="list-col">
+          <div className="list-head">
+            Present <span className="badge">{presentPlayers.length}</span>
+          </div>
+          <div className="list-box glass">
+            {presentPlayers.map((p) => (
+              <PlayerRow
+                key={p.id}
+                player={p}
+                onClick={() => onTogglePresent(p)}
+                present
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeaderboardTab({ leaderboard }) {
+  return (
+    <div className="page">
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Leaderboard</h3>
+          <div className="muted">Lifetime stats</div>
+        </div>
+
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Name</th>
+                <th>Gender</th>
+                <th>ELO</th>
+                <th>Tier</th>
+                <th>Wins</th>
+                <th>Losses</th>
+                <th>Matches</th>
+                <th>Win %</th>
+                <th>Current Streak</th>
+                <th>Best Session</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaderboard.map((p, index) => {
+                const matchesPlayed = Number(p.matches_played || 0);
+                const winPct = matchesPlayed
+                  ? ((Number(p.wins || 0) / matchesPlayed) * 100).toFixed(1)
+                  : '0.0';
+
+                return (
+                  <tr key={p.id}>
+                    <td className="center">{index + 1}</td>
+                    <td>{p.name}</td>
+                    <td className="center">{p.gender}</td>
+                    <td className="center"><b>{p.elo_rating}</b></td>
+                    <td className="center">{displayTier(p)}</td>
+                    <td className="center">{p.wins}</td>
+                    <td className="center">{p.losses}</td>
+                    <td className="center">{p.matches_played}</td>
+                    <td className="center">{winPct}%</td>
+                    <td className="center">{formatSigned(p.current_streak)}</td>
+                    <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsTab({
+  matchMinutes,
+  setMatchMinutes,
+  warningSeconds,
+  setWarningSeconds,
+  transitionSeconds,
+  setTransitionSeconds,
+  preRoundSeconds,
+  setPreRoundSeconds,
+  courtsCount,
+  setCourtsCount,
+  kFactor,
+  setKFactor,
+  matchMode,
+  setMatchModeState,
+  volume,
+  setVolume,
+  saveSettings,
+}) {
+  return (
+    <div className="page">
+      <div className="panel glass">
+        <div className="panel-head">
+          <h3>Settings</h3>
+        </div>
+
+        <div className="settings-grid">
+          <div className="setting">
+            <label>Stage 1 Match Length (minutes)</label>
+            <input
+              className="input"
+              type="number"
+              min="3"
+              max="60"
+              value={matchMinutes}
+              onChange={(e) => setMatchMinutes(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Stage 2 Warning Threshold (seconds left)</label>
+            <input
+              className="input"
+              type="number"
+              min="5"
+              max="120"
+              value={warningSeconds}
+              onChange={(e) => setWarningSeconds(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Stage 3/4 Transition + Winner Selection (seconds)</label>
+            <input
+              className="input"
+              type="number"
+              min="10"
+              max="180"
+              value={transitionSeconds}
+              onChange={(e) => setTransitionSeconds(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Stage 5 New Match Beginning (seconds)</label>
+            <input
+              className="input"
+              type="number"
+              min="5"
+              max="180"
+              value={preRoundSeconds}
+              onChange={(e) => setPreRoundSeconds(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Courts Available</label>
+            <input
+              className="input"
+              type="number"
+              min="1"
+              max="12"
+              value={courtsCount}
+              onChange={(e) => setCourtsCount(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Default ELO K-Factor</label>
+            <input
+              className="input"
+              type="number"
+              min="8"
+              max="64"
+              value={kFactor}
+              onChange={(e) => setKFactor(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="setting">
+            <label>Matchmaking Mode</label>
+            <select
+              className="input"
+              value={matchMode}
+              onChange={(e) => setMatchModeState(e.target.value)}
+            >
+              <option value={MATCH_MODES.WINDOW}>Window</option>
+              <option value={MATCH_MODES.BAND}>Band</option>
+            </select>
+          </div>
+
+          <div className="setting">
+            <label>Sound Volume (0–1)</label>
+            <input
+              className="input"
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              value={volume}
+              onChange={(e) => setVolume(Number(e.target.value))}
+            />
+          </div>
+        </div>
+
+        <div className="settings-note">
+          <div><b>Defaults locked from your latest clarification:</b></div>
+          <div>Stage 5 = 30s • Stage 1 = 10 mins • Stage 2 = 30s left • Stage 3/4 = 60s</div>
+          <div>No winner selected by end of transition = no rating change.</div>
+        </div>
+
+        <div className="right mt-12">
+          <button className="btn primary" onClick={saveSettings}>
+            Save Settings
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PlayerRow({ player, onClick, present = false }) {
   return (
