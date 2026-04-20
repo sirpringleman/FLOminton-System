@@ -13,11 +13,12 @@ import './App.css';
 
 /* ================= API ================= */
 
-const API = '/.netlify/functions/players';
+const PLAYERS_API = '/.netlify/functions/players';
+const SESSIONS_API = '/.netlify/functions/sessions';
 
 const APIClient = {
   async listPlayers() {
-    const res = await fetch(API, { method: 'GET' });
+    const res = await fetch(PLAYERS_API, { method: 'GET' });
     const text = await res.text();
     let data;
     try {
@@ -29,8 +30,8 @@ const APIClient = {
     return Array.isArray(data) ? data.map(normalizePlayer) : [];
   },
 
-  async patch(updates, adminKey = '') {
-    const res = await fetch(API, {
+  async patchPlayers(updates, adminKey = '') {
+    const res = await fetch(PLAYERS_API, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -54,8 +55,8 @@ const APIClient = {
     return data;
   },
 
-  async upsert(players, adminKey = '') {
-    const res = await fetch(API, {
+  async upsertPlayers(players, adminKey = '') {
+    const res = await fetch(PLAYERS_API, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -79,8 +80,8 @@ const APIClient = {
     return data;
   },
 
-  async remove(ids, adminKey = '') {
-    const res = await fetch(API, {
+  async removePlayers(ids, adminKey = '') {
+    const res = await fetch(PLAYERS_API, {
       method: 'DELETE',
       headers: {
         'Content-Type': 'application/json',
@@ -103,6 +104,90 @@ const APIClient = {
 
     return data;
   },
+
+  async startSession(players, adminKey = '') {
+    const res = await fetch(SESSIONS_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({
+        action: 'start_session',
+        players,
+      }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Failed to start session');
+    }
+
+    return data;
+  },
+
+  async logRoundResults(payload, adminKey = '') {
+    const res = await fetch(SESSIONS_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({
+        action: 'log_round_results',
+        ...payload,
+      }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Failed to log round results');
+    }
+
+    return data;
+  },
+
+  async endSession(payload, adminKey = '') {
+    const res = await fetch(SESSIONS_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({
+        action: 'end_session',
+        ...payload,
+      }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Failed to end session');
+    }
+
+    return data;
+  },
 };
 
 /* ================= Local Storage ================= */
@@ -114,14 +199,6 @@ const LS = {
       if (Number.isFinite(value)) return clamp(value, min, max);
     } catch {}
     return def;
-  },
-  getStr(key, def = '') {
-    try {
-      const value = localStorage.getItem(key);
-      return value ?? def;
-    } catch {
-      return def;
-    }
   },
   set(key, value) {
     try {
@@ -193,7 +270,6 @@ function useBeep(volumeRef) {
     const ctx = ensure();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-
     const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
 
     osc.type = 'sine';
@@ -258,6 +334,8 @@ export default function App() {
   const { beep } = useBeep(volumeRef);
 
   const [sessionActive, setSessionActive] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+
   const [running, setRunning] = useState(false);
   const [phase, setPhase] = useState(PHASES.IDLE);
   const [phaseRemaining, setPhaseRemaining] = useState(0);
@@ -281,7 +359,6 @@ export default function App() {
   const matchesRef = useRef(matches);
   const winnerSelectionsRef = useRef(winnerSelections);
   const phaseRef = useRef(phase);
-  const runningRef = useRef(running);
   const roundNumberRef = useRef(roundNumber);
 
   useEffect(() => {
@@ -299,10 +376,6 @@ export default function App() {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
-
-  useEffect(() => {
-    runningRef.current = running;
-  }, [running]);
 
   useEffect(() => {
     roundNumberRef.current = roundNumber;
@@ -326,13 +399,15 @@ export default function App() {
     })();
   }, []);
 
-  const presentPlayers = useMemo(() => {
-    return players.filter((p) => p.is_present).sort((a, b) => a.name.localeCompare(b.name));
-  }, [players]);
+  const presentPlayers = useMemo(
+    () => players.filter((p) => p.is_present).sort((a, b) => a.name.localeCompare(b.name)),
+    [players]
+  );
 
-  const notPresentPlayers = useMemo(() => {
-    return players.filter((p) => !p.is_present).sort((a, b) => a.name.localeCompare(b.name));
-  }, [players]);
+  const notPresentPlayers = useMemo(
+    () => players.filter((p) => !p.is_present).sort((a, b) => a.name.localeCompare(b.name)),
+    [players]
+  );
 
   const leaderboard = useMemo(() => {
     return players
@@ -395,7 +470,7 @@ export default function App() {
         await resolveCurrentRoundAndAdvance();
       }
     })();
-  }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds, beep]);
+  }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds]);
 
   /* ================= Session building ================= */
 
@@ -493,6 +568,7 @@ export default function App() {
     const playerMap = new Map(playersRef.current.map((p) => [p.id, { ...p }]));
     const patchUpdates = [];
     const roundLog = [];
+    const dbRoundResults = [];
 
     for (const match of currentMatches) {
       const winner = Number(selectedWinners[match.court] || 0);
@@ -508,6 +584,33 @@ export default function App() {
           avg1: Math.round(match.avg1),
           avg2: Math.round(match.avg2),
         });
+
+        dbRoundResults.push({
+          court_number: match.court,
+          status: 'no_result',
+          winner_team: null,
+          team1_avg_elo: Math.round(match.avg1),
+          team2_avg_elo: Math.round(match.avg2),
+          players: [
+            ...match.team1.map((p) => ({
+              player_id: p.id,
+              team_number: 1,
+              elo_before: p.elo_rating,
+              elo_after: null,
+              elo_delta: 0,
+              result: null,
+            })),
+            ...match.team2.map((p) => ({
+              player_id: p.id,
+              team_number: 2,
+              elo_before: p.elo_rating,
+              elo_after: null,
+              elo_delta: 0,
+              result: null,
+            })),
+          ],
+        });
+
         continue;
       }
 
@@ -565,6 +668,38 @@ export default function App() {
         delta_team1: eloResult.delta1,
         delta_team2: eloResult.delta2,
       });
+
+      dbRoundResults.push({
+        court_number: match.court,
+        status: 'completed',
+        winner_team: winner,
+        team1_avg_elo: Math.round(match.avg1),
+        team2_avg_elo: Math.round(match.avg2),
+        players: [
+          ...match.team1.map((p) => {
+            const updated = eloResult.updates.find((u) => u.id === p.id);
+            return {
+              player_id: p.id,
+              team_number: 1,
+              elo_before: p.elo_rating,
+              elo_after: updated?.new_elo ?? p.elo_rating,
+              elo_delta: updated?.elo_delta ?? 0,
+              result: updated?.result ?? null,
+            };
+          }),
+          ...match.team2.map((p) => {
+            const updated = eloResult.updates.find((u) => u.id === p.id);
+            return {
+              player_id: p.id,
+              team_number: 2,
+              elo_before: p.elo_rating,
+              elo_after: updated?.new_elo ?? p.elo_rating,
+              elo_delta: updated?.elo_delta ?? 0,
+              result: updated?.result ?? null,
+            };
+          }),
+        ],
+      });
     }
 
     const nextPlayers = Array.from(playerMap.values()).map(normalizePlayer);
@@ -582,10 +717,26 @@ export default function App() {
 
     if (patchUpdates.length) {
       try {
-        await APIClient.patch(patchUpdates, adminKey);
+        await APIClient.patchPlayers(patchUpdates, adminKey);
       } catch (err) {
         console.error(err);
-        alert('Failed to persist ELO/stat updates.');
+        alert(`Failed to persist player ELO/stat updates: ${err.message}`);
+      }
+    }
+
+    if (activeSessionId && dbRoundResults.length) {
+      try {
+        await APIClient.logRoundResults(
+          {
+            session_id: activeSessionId,
+            round_number: roundNumberRef.current,
+            results: dbRoundResults,
+          },
+          adminKey
+        );
+      } catch (err) {
+        console.error(err);
+        alert(`Failed to save round history: ${err.message}`);
       }
     }
 
@@ -613,8 +764,20 @@ export default function App() {
       return;
     }
 
+    if (!activeSessionId) {
+      try {
+        const data = await APIClient.startSession(currentPresent, adminKey);
+        setActiveSessionId(data?.session?.id || null);
+      } catch (err) {
+        console.error(err);
+        alert(`Failed to create session: ${err.message}`);
+        return;
+      }
+    }
+
     setSessionActive(true);
     setSessionSummary(null);
+
     if (roundNumberRef.current === 0 || matchesRef.current.length === 0) {
       await buildRoundAndEnterPreRound();
     } else {
@@ -669,6 +832,34 @@ export default function App() {
       };
     });
 
+    const playerSummaries = currentPlayers
+      .filter((p) => p.is_present)
+      .map((player) => ({
+        player_id: player.id,
+        ending_elo: player.elo_rating,
+        elo_gain: Number(sessionEloGainRef.current.get(player.id) || 0),
+        wins: Number(player.wins || 0),
+        losses: Number(player.losses || 0),
+        matches_played: Number(player.matches_played || 0),
+        benched_count: Number(player.bench_count || 0),
+      }));
+
+    if (activeSessionId) {
+      try {
+        await APIClient.endSession(
+          {
+            session_id: activeSessionId,
+            rounds_played: roundNumberRef.current,
+            player_summaries: playerSummaries,
+          },
+          adminKey
+        );
+      } catch (err) {
+        console.error(err);
+        alert(`Failed to close session history: ${err.message}`);
+      }
+    }
+
     setPlayers((prev) =>
       prev.map((p) => ({
         ...p,
@@ -683,13 +874,14 @@ export default function App() {
     );
 
     try {
-      await APIClient.patch(bestSessionUpdates, adminKey);
+      await APIClient.patchPlayers(bestSessionUpdates, adminKey);
     } catch (err) {
       console.error(err);
-      alert('Failed to save end-of-session updates.');
+      alert(`Failed to save end-of-session player updates: ${err.message}`);
     }
 
     setSessionActive(false);
+    setActiveSessionId(null);
     setRunning(false);
     setPhase(PHASES.IDLE);
     setPhaseRemaining(0);
@@ -713,10 +905,10 @@ export default function App() {
     );
 
     try {
-      await APIClient.patch([{ id: player.id, is_present: nextValue }], adminKey);
+      await APIClient.patchPlayers([{ id: player.id, is_present: nextValue }], adminKey);
     } catch (err) {
       console.error(err);
-      alert('Failed to save presence change.');
+      alert(`Failed to save presence change: ${err.message}`);
     }
   }
 
@@ -741,10 +933,10 @@ export default function App() {
       alert('Admin mode required.');
       return;
     }
-  
+
     const name = newPlayerName.trim();
     if (!name) return;
-  
+
     const player = normalizePlayer({
       id: cryptoRandomId(),
       name,
@@ -760,14 +952,14 @@ export default function App() {
       best_streak: 0,
       best_session_elo_gain: 0,
     });
-  
+
     setPlayers((prev) => [...prev, player].sort((a, b) => a.name.localeCompare(b.name)));
     setNewPlayerName('');
     setNewPlayerGender('M');
     setNewPlayerElo(1000);
-  
+
     try {
-      await APIClient.upsert([player], adminKey);
+      await APIClient.upsertPlayers([player], adminKey);
     } catch (err) {
       console.error(err);
       alert(`Failed to add player: ${err.message}`);
@@ -792,9 +984,9 @@ export default function App() {
       alert('Admin mode required.');
       return;
     }
-  
+
     try {
-      await APIClient.upsert(players.map(normalizePlayer), adminKey);
+      await APIClient.upsertPlayers(players.map(normalizePlayer), adminKey);
       alert('Players saved.');
     } catch (err) {
       console.error(err);
@@ -813,10 +1005,10 @@ export default function App() {
     setPlayers((prev) => prev.filter((p) => p.id !== id));
 
     try {
-      await APIClient.remove([id], adminKey);
+      await APIClient.removePlayers([id], adminKey);
     } catch (err) {
       console.error(err);
-      alert('Failed to delete player.');
+      alert(`Failed to delete player: ${err.message}`);
     }
   }
 
@@ -865,11 +1057,17 @@ export default function App() {
         onAdminLogout={adminLogout}
       />
 
-      {tab === TABS.HOME && <HomeTab sessionSummary={sessionSummary} setTab={setTab} />}
+      {tab === TABS.HOME && (
+        <HomeTab
+          sessionSummary={sessionSummary}
+          setTab={setTab}
+          activeSessionId={activeSessionId}
+        />
+      )}
+
       {tab === TABS.PLAYERS && (
         <PlayerManagementTab
           players={players}
-          isAdmin={isAdmin}
           newPlayerName={newPlayerName}
           setNewPlayerName={setNewPlayerName}
           newPlayerGender={newPlayerGender}
@@ -883,6 +1081,7 @@ export default function App() {
           togglePresent={togglePresent}
         />
       )}
+
       {tab === TABS.SESSION && (
         <SessionTab
           sessionActive={sessionActive}
@@ -912,7 +1111,9 @@ export default function App() {
           onTogglePresent={togglePresent}
         />
       )}
+
       {tab === TABS.LEADERBOARD && <LeaderboardTab leaderboard={leaderboard} />}
+
       {tab === TABS.SETTINGS && (
         <SettingsTab
           matchMinutes={matchMinutes}
@@ -980,14 +1181,14 @@ function Navigation({ tab, setTab, isAdmin, onAdminLogin, onAdminLogout }) {
   );
 }
 
-function HomeTab({ sessionSummary, setTab }) {
+function HomeTab({ sessionSummary, setTab, activeSessionId }) {
   return (
     <div className="page">
       <div className="hero glass">
         <h1>The FLOminton System</h1>
         <p className="muted">
           Badminton matchmaking with fairness-based benching, live court assignment,
-          winner selection, and ELO updates.
+          winner selection, ELO updates, and full session history.
         </p>
 
         <div className="hero-actions">
@@ -1003,6 +1204,10 @@ function HomeTab({ sessionSummary, setTab }) {
           <button className="btn" onClick={() => setTab(TABS.SETTINGS)}>
             Settings
           </button>
+        </div>
+
+        <div className="mt-12 muted">
+          Active Session ID: <b>{activeSessionId || 'None'}</b>
         </div>
       </div>
 
@@ -1042,7 +1247,6 @@ function HomeTab({ sessionSummary, setTab }) {
 
 function PlayerManagementTab({
   players,
-  isAdmin,
   newPlayerName,
   setNewPlayerName,
   newPlayerGender,
