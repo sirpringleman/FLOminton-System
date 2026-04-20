@@ -1,1110 +1,1511 @@
-// src/App.jsx
-// FLOMINTON ELO SYSTEM — FULL VERSION 2.1 FIX
-// ------------------------------------------------
-// Includes:
-// ✓ Home Page
-// ✓ Full Settings System (saved in localStorage)
-// ✓ Pause/Resume timer
-// ✓ Benched list
-// ✓ No display mode
-// ✓ New tab order
-// ✓ Start Session → goes to Session tab (does NOT auto-start a round)
-// ✓ Transition BEFORE rounds
-// ✓ Big centered timer
-// ✓ ELO pipeline (winner input → elo update → transition → next round)
-// ✓ K-factor override
-// ✓ Variable courts
-// ✓ Updated logic.js integration
-// ✓ End Night: reset presence/bench, show Session Summary + System Diagnostics, return to Home
-// ✓ FIX: bench_count & last_played_round persisted so new pairings actually rotate players
-
-import React, { useEffect, useState, useRef } from "react";
-import "./App.css";
-
-import PlayerManagement from "./PlayerManagement";
-import Leaderboards from "./Leaderboards";
-
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  MATCH_MODES,
+  buildMatchesFromPlayers,
+  calculateMatchElo,
+  displayTier,
+  formatTime,
+  getMatchMode,
+  scoreForMatch,
   selectPlayersForRound,
-  buildMatchesFrom16,
-  applyMatchResults,
-  applyAttendanceForSession,
-  formatTime
-} from "./logic";
+  setMatchMode,
+} from './logic';
+import './App.css';
 
-const API_PLAYERS = "/.netlify/functions/players";
-const API_RESULTS = "/.netlify/functions/match_results";
+/* ================= API ================= */
 
-// DEFAULT SETTINGS (overrideable via Settings modal)
-const DEFAULT_SETTINGS = {
-  roundDuration: 600,      // 10 minutes
-  warningTime: 30,         // 30 seconds
-  transitionTime: 60,      // 1 minute
-  courtCount: 4,           // 4 courts
-  kFactor: 32              // ELO K-factor
+const API = '/.netlify/functions/players';
+
+const APIClient = {
+  async listPlayers() {
+    const res = await fetch(API, { method: 'GET' });
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = [];
+    }
+    if (!res.ok) throw new Error(data?.error || data?.message || 'Failed to load players');
+    return Array.isArray(data) ? data.map(normalizePlayer) : [];
+  },
+
+  async patch(updates, adminKey = '') {
+    const res = await fetch(API, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({ updates }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'PATCH failed');
+    }
+
+    return data;
+  },
+
+  async upsert(players, adminKey = '') {
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({ players }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'UPSERT failed');
+    }
+
+    return data;
+  },
+
+  async remove(ids, adminKey = '') {
+    const res = await fetch(API, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminKey ? { 'X-Admin-Key': adminKey } : {}),
+      },
+      body: JSON.stringify({ ids }),
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'DELETE failed');
+    }
+
+    return data;
+  },
+};
+
+/* ================= Local Storage ================= */
+
+const LS = {
+  getNum(key, def, min = -Infinity, max = Infinity) {
+    try {
+      const value = Number(localStorage.getItem(key));
+      if (Number.isFinite(value)) return clamp(value, min, max);
+    } catch {}
+    return def;
+  },
+  getStr(key, def = '') {
+    try {
+      const value = localStorage.getItem(key);
+      return value ?? def;
+    } catch {
+      return def;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, String(value));
+    } catch {}
+  },
+};
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function normalizePlayer(p) {
+  const seededSkill = Number(p?.skill_level);
+  const inferredElo =
+    Number.isFinite(seededSkill) && seededSkill > 0 ? 700 + seededSkill * 100 : 1000;
+
+  const elo = Number(p?.elo_rating);
+  const finalElo = Number.isFinite(elo) && elo > 0 ? elo : inferredElo;
+
+  return {
+    id: p?.id ?? cryptoRandomId(),
+    name: String(p?.name || '').trim(),
+    gender: p?.gender === 'F' ? 'F' : 'M',
+    is_present: !!p?.is_present,
+    elo_rating: finalElo,
+    skill_level: Number.isFinite(seededSkill) && seededSkill > 0 ? seededSkill : displayTier({ elo_rating: finalElo }),
+    bench_count: Number(p?.bench_count) || 0,
+    last_played_round: Number(p?.last_played_round) || 0,
+    wins: Number(p?.wins) || 0,
+    losses: Number(p?.losses) || 0,
+    matches_played: Number(p?.matches_played) || 0,
+    current_streak: Number(p?.current_streak) || 0,
+    best_streak: Number(p?.best_streak) || 0,
+    best_session_elo_gain: Number(p?.best_session_elo_gain) || 0,
+    created_at: p?.created_at || null,
+    updated_at: p?.updated_at || null,
+  };
+}
+
+function cryptoRandomId() {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return 'p-' + Math.random().toString(36).slice(2);
+  }
+}
+
+/* ================= Audio ================= */
+
+function useBeep(volumeRef) {
+  const ctxRef = useRef(null);
+
+  function ensure() {
+    if (!ctxRef.current) {
+      const Ctor = window.AudioContext || window.webkitAudioContext;
+      ctxRef.current = new Ctor();
+    }
+    return ctxRef.current;
+  }
+
+  function beep(freq = 900, ms = 250) {
+    const ctx = ensure();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
+
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    gain.gain.setValueAtTime(volume, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + ms / 1000);
+
+    osc.start();
+    osc.stop(ctx.currentTime + ms / 1000);
+  }
+
+  return { beep };
+}
+
+/* ================= App ================= */
+
+const TABS = {
+  HOME: 'home',
+  PLAYERS: 'players',
+  SESSION: 'session',
+  LEADERBOARD: 'leaderboard',
+  SETTINGS: 'settings',
+};
+
+const PHASES = {
+  IDLE: 'idle',
+  PRE_ROUND: 'pre_round',
+  MATCH: 'match',
+  TRANSITION: 'transition',
 };
 
 export default function App() {
-
-  // --------------------------------------------------------
-  // SETTINGS STATE (persisted in localStorage)
-  // --------------------------------------------------------
-  const [settings, setSettings] = useState(() => {
-    const saved = localStorage.getItem("flomintonSettings");
-    return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
-  });
-
-  function saveSettings(newSettings) {
-    setSettings(newSettings);
-    localStorage.setItem("flomintonSettings", JSON.stringify(newSettings));
-  }
-
-  // --------------------------------------------------------
-  // GLOBAL STATE
-  // --------------------------------------------------------
   const [players, setPlayers] = useState([]);
-  const [present, setPresent] = useState([]);
-  const [benched, setBenched] = useState([]);
-  const [currentMatches, setCurrentMatches] = useState([]);
-  const [roundNumber, setRoundNumber] = useState(1);
-  const [phase, setPhase] = useState("idle");
-  // idle → waiting for “Start / Next Round”
-  // transition → countdown before round
-  // round → active playing phase
-  // winnerInput → selecting winners
+  const [loading, setLoading] = useState(true);
 
-  const [winners, setWinners] = useState({});
-  const [attendanceSet, setAttendanceSet] = useState(new Set());
+  const [tab, setTab] = useState(TABS.HOME);
 
-  const [roundTimeLeft, setRoundTimeLeft] = useState(settings.roundDuration);
-  const [transitionTime, setTransitionTime] = useState(settings.transitionTime);
-  const [isPaused, setIsPaused] = useState(false);
+  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem('adminKey') || '');
+  const isAdmin = !!adminKey;
 
-  const timerRef = useRef(null);
-  const transitionRef = useRef(null);
+  const [matchMode, setMatchModeState] = useState(() => getMatchMode());
 
-  const [adminKey, setAdminKey] = useState(
-    () => sessionStorage.getItem("adminKey") || ""
+  const [matchMinutes, setMatchMinutes] = useState(LS.getNum('flo.match.minutes', 10, 3, 60));
+  const [warningSeconds, setWarningSeconds] = useState(LS.getNum('flo.warning.seconds', 30, 5, 120));
+  const [transitionSeconds, setTransitionSeconds] = useState(
+    LS.getNum('flo.transition.seconds', 60, 10, 180)
   );
+  const [preRoundSeconds, setPreRoundSeconds] = useState(
+    LS.getNum('flo.preround.seconds', 30, 5, 180)
+  );
+  const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 12));
+  const [kFactor, setKFactor] = useState(LS.getNum('flo.kfactor', 24, 8, 64));
+  const [volume, setVolume] = useState(LS.getNum('flo.volume', 0.35, 0, 1));
 
-  // TAB ORDER: Home → PlayerManagement → Session → Leaderboards
-  const [tab, setTab] = useState("home");
+  const volumeRef = useRef(volume);
+  const { beep } = useBeep(volumeRef);
 
-  // Settings modal
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [phase, setPhase] = useState(PHASES.IDLE);
+  const [phaseRemaining, setPhaseRemaining] = useState(0);
+  const [roundNumber, setRoundNumber] = useState(0);
 
-  // Session summary / diagnostics modal
-  const [summaryOpen, setSummaryOpen] = useState(false);
-  const [summaryData, setSummaryData] = useState(null);
-  const [diagnosticsData, setDiagnosticsData] = useState(null);
+  const [matches, setMatches] = useState([]);
+  const [benched, setBenched] = useState([]);
+  const [winnerSelections, setWinnerSelections] = useState({});
+  const [sessionHistory, setSessionHistory] = useState([]);
+  const [sessionSummary, setSessionSummary] = useState(null);
 
-  // --------------------------------------------------------
-  // LOAD PLAYERS AT START
-  // --------------------------------------------------------
-  async function loadPlayers() {
-    try {
-      const res = await fetch(API_PLAYERS);
-      const data = await res.json();
-      if (!Array.isArray(data)) throw new Error("Invalid players format");
+  const [newPlayerName, setNewPlayerName] = useState('');
+  const [newPlayerGender, setNewPlayerGender] = useState('M');
+  const [newPlayerElo, setNewPlayerElo] = useState(1000);
 
-      setPlayers(data);
-      setPresent(data.filter((p) => p.is_present));
-      setBenched([]);
-    } catch (err) {
-      console.error(err);
-      alert("Failed to load players.");
-    }
-  }
+  const teammateHistory = useRef(new Map());
+  const lastRoundBenched = useRef(new Set());
+  const sessionEloGainRef = useRef(new Map());
+
+  const playersRef = useRef(players);
+  const matchesRef = useRef(matches);
+  const winnerSelectionsRef = useRef(winnerSelections);
+  const phaseRef = useRef(phase);
+  const runningRef = useRef(running);
+  const roundNumberRef = useRef(roundNumber);
 
   useEffect(() => {
-    loadPlayers();
+    playersRef.current = players;
+  }, [players]);
+
+  useEffect(() => {
+    matchesRef.current = matches;
+  }, [matches]);
+
+  useEffect(() => {
+    winnerSelectionsRef.current = winnerSelections;
+  }, [winnerSelections]);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
+
+  useEffect(() => {
+    roundNumberRef.current = roundNumber;
+  }, [roundNumber]);
+
+  useEffect(() => {
+    volumeRef.current = volume;
+  }, [volume]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await APIClient.listPlayers();
+        setPlayers(list);
+      } catch (err) {
+        console.error(err);
+        alert('Could not load players.');
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, []);
 
-  // --------------------------------------------------------
-  // PRESENCE TOGGLE
-  // --------------------------------------------------------
-  async function togglePresence(id) {
-    const updated = players.map((p) =>
-      p.id === id ? { ...p, is_present: !p.is_present } : p
-    );
-    setPlayers(updated);
+  const presentPlayers = useMemo(() => {
+    return players.filter((p) => p.is_present).sort((a, b) => a.name.localeCompare(b.name));
+  }, [players]);
 
-    try {
-      await fetch(API_PLAYERS, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
-        },
-        body: JSON.stringify({
-          updates: [
-            { id, is_present: updated.find((p) => p.id === id).is_present }
-          ]
-        })
+  const notPresentPlayers = useMemo(() => {
+    return players.filter((p) => !p.is_present).sort((a, b) => a.name.localeCompare(b.name));
+  }, [players]);
+
+  const leaderboard = useMemo(() => {
+    return players
+      .slice()
+      .sort((a, b) => {
+        if (b.elo_rating !== a.elo_rating) return b.elo_rating - a.elo_rating;
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        return a.name.localeCompare(b.name);
       });
-    } catch (err) {
-      console.error(err);
-      alert("Failed to update presence.");
-    }
+  }, [players]);
 
-    const nowPresent = updated.filter((p) => p.is_present);
-    setPresent(nowPresent);
-  }
+  const activePhaseLabel = useMemo(() => {
+    if (phase === PHASES.PRE_ROUND) return 'Stage 5 • New Match Beginning';
+    if (phase === PHASES.MATCH) return 'Stage 1 • Match Live';
+    if (phase === PHASES.TRANSITION) return 'Stage 3/4 • Match Ended + Transition';
+    return 'Idle';
+  }, [phase]);
 
-  // --------------------------------------------------------
-  // START SESSION (FROM HOME PAGE)
-  // Does NOT auto-start a round. Goes to Session tab.
-  // --------------------------------------------------------
-  function startSession() {
-    setTab("session");
-    setPhase("idle");
-  }
+  const warningActive =
+    phase === PHASES.MATCH && running && phaseRemaining <= warningSeconds && phaseRemaining > 0;
 
-  // --------------------------------------------------------
-  // START ROUND (FIRST STEP IS TRANSITION)
-  // *** FIXED: updates bench_count & last_played_round on players ***
-  // --------------------------------------------------------
-  function startRound() {
-    // Always derive current present players from the latest players state
-    const currentPresent = players.filter((p) => p.is_present);
-    if (currentPresent.length < 4) {
-      alert("Not enough players present to start a round.");
-      return;
-    }
-    setPresent(currentPresent);
+  /* ================= Timer engine ================= */
 
-    // Fairness selection: who plays / who is benched this round
-    const { playing, benched: newBenched } = selectPlayersForRound(
-      currentPresent,
-      roundNumber,
-      new Set(),
-      settings.courtCount
-    );
-
-    setBenched(newBenched);
-
-    // Persist bench_count and last_played_round into main players array
-    const baseUpdatedPlayers = players.map((p) => {
-      if (playing.some((x) => x.id === p.id)) {
-        return {
-          ...p,
-          last_played_round: roundNumber
-        };
-      }
-      if (newBenched.some((x) => x.id === p.id)) {
-        return {
-          ...p,
-          bench_count: (p.bench_count || 0) + 1
-        };
-      }
-      return p;
-    });
-
-    // Build actual matches from the chosen playing group
-    const matches = buildMatchesFrom16(
-      playing,
-      new Map(),
-      settings.courtCount
-    );
-    setCurrentMatches(matches);
-
-    // Attendance for first-time players this session
-    const { updatedPlayers, updatedAttendanceSet } =
-      applyAttendanceForSession(matches, baseUpdatedPlayers, attendanceSet);
-
-    setPlayers(updatedPlayers);
-    setAttendanceSet(updatedAttendanceSet);
-
-    // Clear winners
-    setWinners({});
-
-    // Transition BEFORE the round starts
-    setTransitionTime(settings.transitionTime);
-    setPhase("transition");
-  }
-
-  // --------------------------------------------------------
-  // TRANSITION TIMER
-  // --------------------------------------------------------
   useEffect(() => {
-    if (phase !== "transition") return;
+    if (!running) return;
 
-    if (transitionRef.current) clearInterval(transitionRef.current);
-
-    transitionRef.current = setInterval(() => {
-      setTransitionTime((prev) => {
-        if (prev <= 1) {
-          clearInterval(transitionRef.current);
-          // Move to round phase
-          setRoundTimeLeft(settings.roundDuration);
-          setIsPaused(false);
-          setPhase("round");
-          return 0;
-        }
-        return prev - 1;
-      });
+    const id = window.setInterval(() => {
+      setPhaseRemaining((prev) => Math.max(0, prev - 1));
     }, 1000);
 
-    return () => clearInterval(transitionRef.current);
-  }, [phase, settings.roundDuration, settings.transitionTime]);
+    return () => window.clearInterval(id);
+  }, [running]);
 
-  // --------------------------------------------------------
-  // ROUND TIMER
-  // --------------------------------------------------------
   useEffect(() => {
-    if (phase !== "round") return;
+    if (!running) return;
 
-    if (isPaused) {
-      if (timerRef.current) clearInterval(timerRef.current);
+    if (phase === PHASES.MATCH && phaseRemaining === warningSeconds) {
+      beep(1200, 900);
+    }
+
+    if (phaseRemaining !== 0) return;
+
+    (async () => {
+      if (phaseRef.current === PHASES.PRE_ROUND) {
+        beep(950, 700);
+        setPhase(PHASES.MATCH);
+        setPhaseRemaining(matchMinutes * 60);
+        return;
+      }
+
+      if (phaseRef.current === PHASES.MATCH) {
+        beep(500, 1200);
+        setPhase(PHASES.TRANSITION);
+        setPhaseRemaining(transitionSeconds);
+        return;
+      }
+
+      if (phaseRef.current === PHASES.TRANSITION) {
+        beep(850, 700);
+        await resolveCurrentRoundAndAdvance();
+      }
+    })();
+  }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds]);
+
+  /* ================= Session building ================= */
+
+  async function buildRoundAndEnterPreRound() {
+    const currentPlayers = playersRef.current.filter((p) => p.is_present);
+
+    if (currentPlayers.length < 4) {
+      alert('At least 4 players must be present.');
+      stopSessionClock();
       return;
     }
 
-    if (timerRef.current) clearInterval(timerRef.current);
-
-    timerRef.current = setInterval(() => {
-      setRoundTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          // Move to WinnerInput phase
-          setPhase("winnerInput");
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timerRef.current);
-  }, [phase, isPaused]);
-
-  // --------------------------------------------------------
-  // WARNING SOUND (placeholder hook)
-  // --------------------------------------------------------
-  useEffect(() => {
-    if (
-      roundTimeLeft === settings.warningTime &&
-      phase === "round" &&
-      !isPaused
-    ) {
-      // Play warning sound here if you add audio
-      // playWarningSound();
-    }
-  }, [roundTimeLeft, phase, isPaused, settings.warningTime]);
-
-  // --------------------------------------------------------
-  // SELECT WINNER
-  // --------------------------------------------------------
-  function selectWinner(courtNumber, team) {
-    setWinners((prev) => ({ ...prev, [courtNumber]: team }));
-  }
-
-  function allCourtsHaveWinners() {
-    if (!currentMatches.length) return false;
-    return currentMatches.every((m) => winners[m.court]);
-  }
-
-  // --------------------------------------------------------
-  // CONFIRM WINNERS → APPLY MATCH RESULTS
-  // --------------------------------------------------------
-  async function confirmResults() {
-    if (!allCourtsHaveWinners()) return;
-
-    const updatedLocalPlayers = applyMatchResults(
-      currentMatches,
-      winners,
-      players,
-      settings.kFactor
+    const nextRound = roundNumberRef.current + 1;
+    const { playing, benched: nextBenched } = selectPlayersForRound(
+      currentPlayers,
+      nextRound,
+      lastRoundBenched.current,
+      courtsCount
     );
 
-    setPlayers(updatedLocalPlayers);
-
-    const updates = updatedLocalPlayers.map((p) => ({
-      id: p.id,
-      elo_rating: p.elo_rating,
-      elo_delta_session: p.elo_delta_session,
-      elo_delta_total: p.elo_delta_total,
-      wins: p.wins,
-      losses: p.losses,
-      matches_played: p.matches_played,
-      attendance_count: p.attendance_count,
-      win_streak: p.win_streak,
-      loss_streak: p.loss_streak,
-      last_seen_at: p.last_seen_at
-    }));
-
-    try {
-      await fetch(API_PLAYERS, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
-        },
-        body: JSON.stringify({ updates })
-      });
-    } catch (err) {
-      console.error(err);
-      alert("Failed to update players.");
+    if (playing.length < 4) {
+      alert('Not enough players available to build a valid round.');
+      stopSessionClock();
+      return;
     }
 
-    // Write match results
-    const resultsRows = [];
-    for (const m of currentMatches) {
-      const result = winners[m.court];
-      const t1Win = result === "team1";
-      const t2Win = !t1Win;
+    const builtMatches = buildMatchesFromPlayers(playing, teammateHistory.current, courtsCount);
 
-      const team1 = m.team1;
-      const team2 = m.team2;
+    if (!builtMatches.length) {
+      alert('Could not build matches.');
+      stopSessionClock();
+      return;
+    }
 
-      const avg1 = m.avg1;
-      const avg2 = m.avg2;
+    const playingIds = new Set(playing.map((p) => p.id));
 
-      for (const p of [...team1, ...team2]) {
-        const before = p.elo_rating || 1000;
-        const after =
-          updatedLocalPlayers.find((x) => x.id === p.id)?.elo_rating ||
-          before;
-        const delta = after - before;
+    setPlayers((prev) =>
+      prev.map((p) => {
+        if (playingIds.has(p.id)) {
+          return {
+            ...p,
+            bench_count: Number(p.bench_count || 0),
+            last_played_round: nextRound,
+          };
+        }
+        if (nextBenched.find((b) => b.id === p.id)) {
+          return {
+            ...p,
+            bench_count: Number(p.bench_count || 0) + 1,
+          };
+        }
+        return p;
+      })
+    );
 
-        resultsRows.push({
-          session_id: new Date().toISOString().slice(0, 10),
-          round_number: roundNumber,
-          court_number: m.court,
-          player_id: p.id,
-          team: team1.includes(p) ? "team1" : "team2",
-          result:
-            (team1.includes(p) && t1Win) || (team2.includes(p) && t2Win)
-              ? "win"
-              : "loss",
-          elo_before: before,
-          elo_after: after,
-          elo_change: delta,
-          opponent_avg_elo: team1.includes(p) ? avg2 : avg1
+    setRoundNumber(nextRound);
+    roundNumberRef.current = nextRound;
+
+    setMatches(builtMatches);
+    setBenched(nextBenched);
+    setWinnerSelections({});
+    lastRoundBenched.current = new Set(nextBenched.map((b) => b.id));
+
+    setSessionHistory((prev) => [
+      ...prev,
+      {
+        type: 'round_built',
+        round: nextRound,
+        created_at: new Date().toISOString(),
+        matches: builtMatches.map((m) => ({
+          court: m.court,
+          team1: m.team1.map((p) => p.name),
+          team2: m.team2.map((p) => p.name),
+          avg1: Math.round(m.avg1),
+          avg2: Math.round(m.avg2),
+        })),
+      },
+    ]);
+
+    setPhase(PHASES.PRE_ROUND);
+    setPhaseRemaining(preRoundSeconds);
+    setRunning(true);
+  }
+
+  async function resolveCurrentRoundAndAdvance() {
+    const currentMatches = matchesRef.current;
+    const selectedWinners = winnerSelectionsRef.current;
+
+    if (!currentMatches.length) {
+      stopSessionClock();
+      return;
+    }
+
+    const playerMap = new Map(playersRef.current.map((p) => [p.id, { ...p }]));
+    const patchUpdates = [];
+    const roundLog = [];
+
+    for (const match of currentMatches) {
+      const winner = Number(selectedWinners[match.court] || 0);
+
+      if (winner !== 1 && winner !== 2) {
+        roundLog.push({
+          round: roundNumberRef.current,
+          court: match.court,
+          winner_team: 0,
+          status: 'no_result',
+          team1: match.team1.map((p) => p.name),
+          team2: match.team2.map((p) => p.name),
+          avg1: Math.round(match.avg1),
+          avg2: Math.round(match.avg2),
+        });
+        continue;
+      }
+
+      const eloResult = calculateMatchElo(match, winner, kFactor);
+
+      for (const update of eloResult.updates) {
+        const player = playerMap.get(update.id);
+        if (!player) continue;
+
+        const newElo = update.new_elo;
+        const delta = update.elo_delta;
+        const didWin = update.result === 'win';
+
+        const previousStreak = Number(player.current_streak || 0);
+        let nextStreak = 0;
+
+        if (didWin) {
+          nextStreak = previousStreak >= 0 ? previousStreak + 1 : 1;
+        } else {
+          nextStreak = previousStreak <= 0 ? previousStreak - 1 : -1;
+        }
+
+        const bestStreak = Math.max(Number(player.best_streak || 0), Math.abs(nextStreak));
+
+        player.elo_rating = newElo;
+        player.wins = Number(player.wins || 0) + (didWin ? 1 : 0);
+        player.losses = Number(player.losses || 0) + (didWin ? 0 : 1);
+        player.matches_played = Number(player.matches_played || 0) + 1;
+        player.current_streak = nextStreak;
+        player.best_streak = bestStreak;
+
+        const gainMap = sessionEloGainRef.current;
+        gainMap.set(player.id, Number(gainMap.get(player.id) || 0) + delta);
+
+        patchUpdates.push({
+          id: player.id,
+          elo_rating: player.elo_rating,
+          wins: player.wins,
+          losses: player.losses,
+          matches_played: player.matches_played,
+          current_streak: player.current_streak,
+          best_streak: player.best_streak,
         });
       }
-    }
 
-    try {
-      await fetch(API_RESULTS, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
-        },
-        body: JSON.stringify({ results: resultsRows })
+      roundLog.push({
+        round: roundNumberRef.current,
+        court: match.court,
+        winner_team: winner,
+        status: 'completed',
+        team1: match.team1.map((p) => p.name),
+        team2: match.team2.map((p) => p.name),
+        avg1: Math.round(match.avg1),
+        avg2: Math.round(match.avg2),
+        delta_team1: eloResult.delta1,
+        delta_team2: eloResult.delta2,
       });
-    } catch (err) {
-      console.error(err);
-      alert("Failed writing match results.");
     }
 
-    // Next: transition before next round
-    setRoundNumber((r) => r + 1);
-    setTransitionTime(settings.transitionTime);
-    setPhase("transition");
+    const nextPlayers = Array.from(playerMap.values()).map(normalizePlayer);
+    setPlayers(nextPlayers);
+
+    setSessionHistory((prev) => [
+      ...prev,
+      {
+        type: 'round_resolved',
+        round: roundNumberRef.current,
+        created_at: new Date().toISOString(),
+        results: roundLog,
+      },
+    ]);
+
+    if (patchUpdates.length) {
+      try {
+        await APIClient.patch(patchUpdates, adminKey);
+      } catch (err) {
+        console.error(err);
+        alert('Failed to persist ELO/stat updates.');
+      }
+    }
+
+    const refreshedPresent = nextPlayers.filter((p) => p.is_present);
+    if (refreshedPresent.length < 4) {
+      stopSessionClock();
+      return;
+    }
+
+    await buildRoundAndEnterPreRound();
   }
 
-  // --------------------------------------------------------
-  // PAUSE / RESUME
-  // --------------------------------------------------------
-  function pauseTimer() {
-    setIsPaused(true);
+  function stopSessionClock() {
+    setRunning(false);
+    setPhase(PHASES.IDLE);
+    setPhaseRemaining(0);
   }
 
-  function resumeTimer() {
-    setIsPaused(false);
+  /* ================= Actions ================= */
+
+  async function startSession() {
+    const currentPresent = playersRef.current.filter((p) => p.is_present);
+    if (currentPresent.length < 4) {
+      alert('At least 4 players must be present before starting the session.');
+      return;
+    }
+
+    setSessionActive(true);
+    setSessionSummary(null);
+    if (roundNumberRef.current === 0 || matchesRef.current.length === 0) {
+      await buildRoundAndEnterPreRound();
+    } else {
+      setRunning(true);
+    }
   }
 
-  // --------------------------------------------------------
-  // END NIGHT
-  // --------------------------------------------------------
-  async function endNight() {
-    const ok = window.confirm(
-      "End night, mark everyone as not present, and show session summary?"
-    );
-    if (!ok) return;
+  function pauseSession() {
+    setRunning(false);
+  }
 
-    // Build session summary based on current player stats
-    const summaryPlayers = players
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        eloChange: Math.round(p.elo_delta_session || 0),
-        wins: p.wins || 0,
-        losses: p.losses || 0,
-        matches: p.matches_played || 0
+  function resumeSession() {
+    if (!sessionActive) {
+      startSession();
+      return;
+    }
+    if (phase === PHASES.IDLE && matches.length) {
+      setPhase(PHASES.PRE_ROUND);
+      setPhaseRemaining(preRoundSeconds);
+    }
+    setRunning(true);
+  }
+
+  async function nextRoundNow() {
+    if (!sessionActive) {
+      alert('Start the session first.');
+      return;
+    }
+    setRunning(false);
+    await resolveCurrentRoundAndAdvance();
+  }
+
+  async function endSession() {
+    const currentPlayers = playersRef.current;
+
+    const summary = buildSessionSummary(currentPlayers, sessionEloGainRef.current, sessionHistory, roundNumberRef.current);
+    setSessionSummary(summary);
+
+    const bestSessionUpdates = currentPlayers.map((player) => {
+      const gain = Number(sessionEloGainRef.current.get(player.id) || 0);
+      return {
+        id: player.id,
+        is_present: false,
+        bench_count: 0,
+        last_played_round: 0,
+        best_session_elo_gain: Math.max(Number(player.best_session_elo_gain || 0), gain),
+      };
+    });
+
+    setPlayers((prev) =>
+      prev.map((p) => ({
+        ...p,
+        is_present: false,
+        bench_count: 0,
+        last_played_round: 0,
+        best_session_elo_gain: Math.max(
+          Number(p.best_session_elo_gain || 0),
+          Number(sessionEloGainRef.current.get(p.id) || 0)
+        ),
       }))
-      .filter(
-        (p) =>
-          p.matches > 0 ||
-          p.wins > 0 ||
-          p.losses > 0 ||
-          p.eloChange !== 0
-      )
-      .sort((a, b) => b.eloChange - a.eloChange);
-
-    const totalPlayers = players.length;
-    const playersWhoPlayed = summaryPlayers.length;
-    const roundsCompleted =
-      roundNumber > 1 ? roundNumber - (phase === "idle" ? 1 : 0) : 0;
-
-    const benchCounts = players.map((p) => p.bench_count || 0);
-    const maxBench = benchCounts.length ? Math.max(...benchCounts) : 0;
-    const avgBench =
-      benchCounts.length
-        ? benchCounts.reduce((a, b) => a + b, 0) / benchCounts.length
-        : 0;
-
-    const diagnostics = {
-      totalPlayers,
-      playersWhoPlayed,
-      roundsCompleted,
-      maxBenchCount: maxBench,
-      avgBenchCount: Number(avgBench.toFixed(2)),
-      settingsSnapshot: { ...settings }
-    };
-
-    setSummaryData({ players: summaryPlayers });
-    setDiagnosticsData(diagnostics);
-    setSummaryOpen(true);
-
-    // Reset presence / bench / round info in backend
-    const resetUpdates = players.map((p) => ({
-      id: p.id,
-      is_present: false,
-      bench_count: 0,
-      last_played_round: 0,
-      elo_delta_session: 0
-    }));
+    );
 
     try {
-      await fetch(API_PLAYERS, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Admin-Key": adminKey
-        },
-        body: JSON.stringify({ updates: resetUpdates })
-      });
+      await APIClient.patch(bestSessionUpdates, adminKey);
     } catch (err) {
       console.error(err);
-      alert("Failed to reset players at end of night.");
+      alert('Failed to save end-of-session updates.');
     }
 
-    // Reset local state
-    const locallyResetPlayers = players.map((p) => ({
-      ...p,
+    setSessionActive(false);
+    setRunning(false);
+    setPhase(PHASES.IDLE);
+    setPhaseRemaining(0);
+    setRoundNumber(0);
+    roundNumberRef.current = 0;
+    setMatches([]);
+    setBenched([]);
+    setWinnerSelections({});
+    teammateHistory.current = new Map();
+    lastRoundBenched.current = new Set();
+    sessionEloGainRef.current = new Map();
+    setSessionHistory([]);
+    setTab(TABS.HOME);
+  }
+
+  async function togglePresent(player) {
+    const nextValue = !player.is_present;
+
+    setPlayers((prev) =>
+      prev.map((p) => (p.id === player.id ? { ...p, is_present: nextValue } : p))
+    );
+
+    try {
+      await APIClient.patch([{ id: player.id, is_present: nextValue }], adminKey);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save presence change.');
+    }
+  }
+
+  function setWinner(court, team) {
+    if (phase !== PHASES.TRANSITION) return;
+    setWinnerSelections((prev) => ({
+      ...prev,
+      [court]: prev[court] === team ? 0 : team,
+    }));
+  }
+
+  function clearWinner(court) {
+    if (phase !== PHASES.TRANSITION) return;
+    setWinnerSelections((prev) => ({
+      ...prev,
+      [court]: 0,
+    }));
+  }
+
+  async function addPlayer() {
+    if (!isAdmin) {
+      alert('Admin mode required.');
+      return;
+    }
+
+    const name = newPlayerName.trim();
+    if (!name) return;
+
+    const player = normalizePlayer({
+      id: cryptoRandomId(),
+      name,
+      gender: newPlayerGender,
+      elo_rating: Number(newPlayerElo) || 1000,
       is_present: false,
       bench_count: 0,
       last_played_round: 0,
-      elo_delta_session: 0
-    }));
+      wins: 0,
+      losses: 0,
+      matches_played: 0,
+      current_streak: 0,
+      best_streak: 0,
+      best_session_elo_gain: 0,
+    });
 
-    setPlayers(locallyResetPlayers);
-    setPresent([]);
-    setBenched([]);
-    setCurrentMatches([]);
-    setPhase("idle");
-    setRoundNumber(1);
-    setAttendanceSet(new Set());
-    setWinners({});
+    setPlayers((prev) => [...prev, player].sort((a, b) => a.name.localeCompare(b.name)));
+    setNewPlayerName('');
+    setNewPlayerGender('M');
+    setNewPlayerElo(1000);
+
+    try {
+      await APIClient.upsert([player], adminKey);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to add player.');
+    }
   }
 
-  function closeSummaryModal() {
-    setSummaryOpen(false);
-    setTab("home");
-  }
-
-  // --------------------------------------------------------
-  // SETTINGS MODAL OPEN/CLOSE
-  // --------------------------------------------------------
-  function openSettings() {
-    setSettingsOpen(true);
-  }
-
-  function closeSettings() {
-    setSettingsOpen(false);
-  }
-
-  // --------------------------------------------------------
-  // HOME PAGE RENDER
-  // --------------------------------------------------------
-  function renderHome() {
-    return (
-      <div className="home-page">
-        <h1>FLOminton</h1>
-        <p className="home-subtitle">
-          Automated badminton session system with ELO matchmaking
-        </p>
-
-        <div className="home-buttons">
-          <button className="btn home-btn" onClick={startSession}>
-            Start Session
-          </button>
-
-          <button className="btn home-btn" onClick={() => setTab("players")}>
-            Player Management
-          </button>
-
-          <button className="btn home-btn" onClick={() => setTab("leaderboards")}>
-            Leaderboards
-          </button>
-
-          <button className="btn home-btn" onClick={openSettings}>
-            Settings ⚙️
-          </button>
-        </div>
-      </div>
+  function updatePlayerLocal(id, field, value) {
+    setPlayers((prev) =>
+      prev.map((p) => {
+        if (p.id !== id) return p;
+        const next = { ...p, [field]: value };
+        if (field === 'elo_rating') {
+          next.skill_level = displayTier({ elo_rating: Number(value) || 1000 });
+        }
+        return next;
+      })
     );
   }
 
-  // --------------------------------------------------------
-  // MAIN RENDER
-  // --------------------------------------------------------
+  async function saveAllPlayers() {
+    if (!isAdmin) {
+      alert('Admin mode required.');
+      return;
+    }
 
-  return (
-    <div className="app-container">
-      {/* TOP NAVIGATION BAR */}
-      <div className="top-tabs">
-        <button
-          className={tab === "home" ? "tab active" : "tab"}
-          onClick={() => setTab("home")}
-        >
+    try {
+      await APIClient.upsert(players.map(normalizePlayer), adminKey);
+      alert('Players saved.');
+    } catch (err) {
+      console.error(err);
+      alert('Failed to save players.');
+    }
+  }
+
+  async function deletePlayer(id) {
+    if (!isAdmin) {
+      alert('Admin mode required.');
+      return;
+    }
+
+    if (!window.confirm('Delete this player?')) return;
+
+    setPlayers((prev) => prev.filter((p) => p.id !== id));
+
+    try {
+      await APIClient.remove([id], adminKey);
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete player.');
+    }
+  }
+
+  function adminLogin() {
+    const key = prompt('Enter admin key');
+    if (!key) return;
+    sessionStorage.setItem('adminKey', key);
+    setAdminKey(key);
+    alert('Admin mode enabled.');
+  }
+
+  function adminLogout() {
+    sessionStorage.removeItem('adminKey');
+    setAdminKey('');
+    alert('Admin mode disabled.');
+  }
+
+  function saveSettings() {
+    LS.set('flo.match.minutes', matchMinutes);
+    LS.set('flo.warning.seconds', warningSeconds);
+    LS.set('flo.transition.seconds', transitionSeconds);
+    LS.set('flo.preround.seconds', preRoundSeconds);
+    LS.set('flo.courts', courtsCount);
+    LS.set('flo.kfactor', kFactor);
+    LS.set('flo.volume', volume);
+    LS.set('match_mode', matchMode);
+    setMatchMode(matchMode);
+    alert('Settings saved.');
+  }
+
+  /* ================= Views ================= */
+
+  function Navigation() {
+    return (
+      <div className="nav glass">
+        <button className={`nav-btn ${tab === TABS.HOME ? 'active' : ''}`} onClick={() => setTab(TABS.HOME)}>
           Home
         </button>
-
-        <button
-          className={tab === "players" ? "tab active" : "tab"}
-          onClick={() => setTab("players")}
-        >
+        <button className={`nav-btn ${tab === TABS.PLAYERS ? 'active' : ''}`} onClick={() => setTab(TABS.PLAYERS)}>
           Player Management
         </button>
-
-        <button
-          className={tab === "session" ? "tab active" : "tab"}
-          onClick={() => setTab("session")}
-        >
+        <button className={`nav-btn ${tab === TABS.SESSION ? 'active' : ''}`} onClick={() => setTab(TABS.SESSION)}>
           Session
         </button>
-
         <button
-          className={tab === "leaderboards" ? "tab active" : "tab"}
-          onClick={() => setTab("leaderboards")}
+          className={`nav-btn ${tab === TABS.LEADERBOARD ? 'active' : ''}`}
+          onClick={() => setTab(TABS.LEADERBOARD)}
         >
-          Leaderboards
+          Leaderboard
+        </button>
+        <button
+          className={`nav-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
+          onClick={() => setTab(TABS.SETTINGS)}
+        >
+          Settings
         </button>
 
-        {/* Settings icon always available */}
-        <button className="settings-icon-btn" onClick={openSettings}>
-          ⚙️
-        </button>
+        <div className="nav-spacer" />
+
+        {isAdmin ? (
+          <button className="btn" onClick={adminLogout}>
+            Admin On
+          </button>
+        ) : (
+          <button className="btn" onClick={adminLogin}>
+            Admin
+          </button>
+        )}
       </div>
+    );
+  }
 
-      {/* TAB CONTENT */}
-      {tab === "home" && renderHome()}
+  function HomeTab() {
+    return (
+      <div className="page">
+        <div className="hero glass">
+          <h1>The FLOminton System</h1>
+          <p className="muted">
+            Badminton matchmaking with fairness-based benching, live court assignment,
+            winner selection, and ELO updates.
+          </p>
 
-      {tab === "players" && (
-        <div className="players-tab">
-          <PlayerManagement />
-        </div>
-      )}
-
-      {tab === "leaderboards" && (
-        <div className="leaderboards-tab">
-          <Leaderboards />
-        </div>
-      )}
-
-      {/* SESSION TAB */}
-      {tab === "session" && (
-        <div className="session-page">
-          {/* BIG TIMER + ROUND HEADER */}
-          {(phase === "round" || phase === "transition") && (
-            <div className="big-timer-header">
-              <h2 className="round-label">Round {roundNumber}</h2>
-
-              {phase === "round" && (
-                <div className="big-timer">{formatTime(roundTimeLeft)}</div>
-              )}
-
-              {phase === "transition" && (
-                <div className="big-timer transition">
-                  {formatTime(transitionTime)}
-                </div>
-              )}
-
-              {/* Pause / Resume Controls */}
-              {phase === "round" && (
-                <div className="timer-controls">
-                  {!isPaused && (
-                    <button className="btn pause-btn" onClick={pauseTimer}>
-                      Pause
-                    </button>
-                  )}
-
-                  {isPaused && (
-                    <button className="btn resume-btn" onClick={resumeTimer}>
-                      Resume
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* IDLE MODE */}
-          {phase === "idle" && (
-            <div className="idle-container">
-              <h2>Session Ready</h2>
-              <p className="idle-subtext">
-                Press “Start / Next Round” to begin
-              </p>
-            </div>
-          )}
-
-          {/* SESSION CONTROLS (ABOVE COURTS) */}
-          <div className="session-controls">
-            <button className="btn" onClick={startRound}>
-              Start / Next Round
+          <div className="hero-actions">
+            <button className="btn primary" onClick={() => setTab(TABS.SESSION)}>
+              Go to Session
             </button>
-            <button className="btn danger" onClick={endNight}>
-              End Night
+            <button className="btn" onClick={() => setTab(TABS.PLAYERS)}>
+              Player Management
+            </button>
+            <button className="btn" onClick={() => setTab(TABS.LEADERBOARD)}>
+              Leaderboard
+            </button>
+            <button className="btn" onClick={() => setTab(TABS.SETTINGS)}>
+              Settings
+            </button>
+          </div>
+        </div>
+
+        {sessionSummary && (
+          <div className="panel glass">
+            <div className="panel-head">
+              <h3>Last Session Summary</h3>
+            </div>
+
+            <div className="summary-grid">
+              <div className="summary-card">
+                <div className="summary-label">Rounds Played</div>
+                <div className="summary-value">{sessionSummary.rounds}</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-label">Matches Resolved</div>
+                <div className="summary-value">{sessionSummary.completedMatches}</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-label">No Result Matches</div>
+                <div className="summary-value">{sessionSummary.noResultMatches}</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-label">Top Session Gain</div>
+                <div className="summary-value">
+                  {sessionSummary.topGainName
+                    ? `${sessionSummary.topGainName} (${formatSigned(sessionSummary.topGain)})`
+                    : '—'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function PlayerManagementTab() {
+    return (
+      <div className="page">
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Player Management</h3>
+            <div className="muted">{players.length} players</div>
+          </div>
+
+          <div className="admin-add-row">
+            <input
+              className="input"
+              placeholder="Player name"
+              value={newPlayerName}
+              onChange={(e) => setNewPlayerName(e.target.value)}
+            />
+            <select
+              className="input"
+              value={newPlayerGender}
+              onChange={(e) => setNewPlayerGender(e.target.value)}
+            >
+              <option value="M">M</option>
+              <option value="F">F</option>
+            </select>
+            <input
+              className="input"
+              type="number"
+              min="600"
+              max="2000"
+              step="1"
+              value={newPlayerElo}
+              onChange={(e) => setNewPlayerElo(Number(e.target.value))}
+            />
+            <button className="btn" onClick={addPlayer}>
+              Add Player
+            </button>
+            <button className="btn primary" onClick={saveAllPlayers}>
+              Save All
             </button>
           </div>
 
-          {/* TRANSITION MODE */}
-          {phase === "transition" && (
-            <div className="transition-container">
-              <h3>Next Round Begins Soon…</h3>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Gender</th>
+                  <th>ELO</th>
+                  <th>Tier</th>
+                  <th>Wins</th>
+                  <th>Losses</th>
+                  <th>Matches</th>
+                  <th>Current Streak</th>
+                  <th>Best Session</th>
+                  <th>Present</th>
+                  <th>Delete</th>
+                </tr>
+              </thead>
+              <tbody>
+                {players
+                  .slice()
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((p) => (
+                    <tr key={p.id}>
+                      <td>
+                        <input
+                          className="input"
+                          value={p.name}
+                          onChange={(e) => updatePlayerLocal(p.id, 'name', e.target.value)}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          className="input"
+                          value={p.gender}
+                          onChange={(e) => updatePlayerLocal(p.id, 'gender', e.target.value)}
+                        >
+                          <option value="M">M</option>
+                          <option value="F">F</option>
+                        </select>
+                      </td>
+                      <td>
+                        <input
+                          className="input"
+                          type="number"
+                          min="600"
+                          max="2200"
+                          value={p.elo_rating}
+                          onChange={(e) => updatePlayerLocal(p.id, 'elo_rating', Number(e.target.value))}
+                        />
+                      </td>
+                      <td className="center">{displayTier(p)}</td>
+                      <td className="center">{p.wins}</td>
+                      <td className="center">{p.losses}</td>
+                      <td className="center">{p.matches_played}</td>
+                      <td className="center">{formatSigned(p.current_streak)}</td>
+                      <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
+                      <td className="center">
+                        <input type="checkbox" checked={p.is_present} onChange={() => togglePresent(p)} />
+                      </td>
+                      <td className="center">
+                        <button className="btn danger" onClick={() => deletePlayer(p.id)}>
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-              <div className="courts-grid">
-                {currentMatches.map((match) => (
-                  <div key={match.court} className="court-card upcoming">
-                    <div className="court-title">Court {match.court}</div>
+  function SessionTab() {
+    return (
+      <div className="page">
+        <div className="toolbar glass">
+          <div className="toolbar-left">
+            <button className="btn primary" onClick={startSession}>
+              Start Session
+            </button>
+            <button className="btn" onClick={pauseSession} disabled={!running}>
+              Pause
+            </button>
+            <button className="btn" onClick={resumeSession}>
+              Play / Resume
+            </button>
+            <button className="btn" onClick={nextRoundNow} disabled={!sessionActive}>
+              Force Next Round
+            </button>
+            <button className="btn danger" onClick={endSession} disabled={!sessionActive && roundNumber === 0}>
+              End Session
+            </button>
+          </div>
 
-                    <div className="team-box upcoming-team">
-                      {match.team1.map((p) => (
-                        <div key={p.id} className="player-chip">
-                          {p.name}
-                        </div>
-                      ))}
-                    </div>
+          <div className="toolbar-right stack-right">
+            <div className={`phase-chip ${phase}`}>
+              {activePhaseLabel}
+            </div>
+            <div className={`time ${warningActive ? 'warn' : ''}`}>
+              Round {roundNumber || 0} • {formatTime(phaseRemaining)}
+            </div>
+          </div>
+        </div>
 
-                    <div className="vs-line">vs</div>
+        <div className="session-status-grid">
+          <div className="summary-card">
+            <div className="summary-label">Phase</div>
+            <div className="summary-value small">{activePhaseLabel}</div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-label">Present</div>
+            <div className="summary-value">{presentPlayers.length}</div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-label">Benched</div>
+            <div className="summary-value">{benched.length}</div>
+          </div>
+          <div className="summary-card">
+            <div className="summary-label">Mode</div>
+            <div className="summary-value small">
+              {matchMode === MATCH_MODES.BAND ? 'Band' : 'Window'}
+            </div>
+          </div>
+        </div>
 
-                    <div className="team-box upcoming-team">
-                      {match.team2.map((p) => (
-                        <div key={p.id} className="player-chip">
-                          {p.name}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Matches</h3>
+            <div className="muted">
+              Stage 5: {preRoundSeconds}s • Match: {matchMinutes}m • Warning: {warningSeconds}s • Transition: {transitionSeconds}s
+            </div>
+          </div>
 
-              {/* Benched List */}
-              {benched.length > 0 && (
-                <div className="benched-section">
-                  <h3>Benched</h3>
-                  <div className="benched-list">
-                    {benched.map((p) => (
-                      <div key={p.id} className="benched-pill">
-                        {p.name}
-                      </div>
-                    ))}
-                  </div>
+          {matches.length === 0 ? (
+            <div className="muted p-12">No matches built yet.</div>
+          ) : (
+            <div className="courts-grid">
+              {matches.map((match) => (
+                <CourtCard
+                  key={match.court}
+                  match={match}
+                  phase={phase}
+                  selectedWinner={Number(winnerSelections[match.court] || 0)}
+                  onPickWinner={setWinner}
+                  onClearWinner={clearWinner}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Benched Players</h3>
+          </div>
+
+          {benched.length === 0 ? (
+            <div className="muted p-8">No one benched this round.</div>
+          ) : (
+            <div className="bench-row">
+              {benched.map((p) => (
+                <div className="tag" key={p.id}>
+                  <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                  {p.name} <span className="muted">(ELO {p.elo_rating})</span>
                 </div>
-              )}
+              ))}
             </div>
           )}
+        </div>
 
-          {/* ROUND MODE */}
-          {phase === "round" && (
-            <div className="round-container">
-              <div className="courts-grid">
-                {currentMatches.map((match) => (
-                  <div key={match.court} className="court-card">
-                    <div className="court-title">Court {match.court}</div>
-
-                    <div className="team-box">
-                      {match.team1.map((p) => (
-                        <div key={p.id} className="player-chip">
-                          {p.name}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="vs-line">vs</div>
-
-                    <div className="team-box">
-                      {match.team2.map((p) => (
-                        <div key={p.id} className="player-chip">
-                          {p.name}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Benched List */}
-              {benched.length > 0 && (
-                <div className="benched-section">
-                  <h3>Benched</h3>
-                  <div className="benched-list">
-                    {benched.map((p) => (
-                      <div key={p.id} className="benched-pill">
-                        {p.name}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+        <div className="lists-grid">
+          <div className="list-col">
+            <div className="list-head">
+              All Players <span className="badge">{notPresentPlayers.length}</span>
             </div>
-          )}
-
-          {/* WINNER INPUT MODE */}
-          {phase === "winnerInput" && (
-            <div className="winner-input-container">
-              <h2>Select Winners — Round {roundNumber}</h2>
-
-              <div className="courts-grid">
-                {currentMatches.map((match) => {
-                  const selected = winners[match.court];
-                  const t1Selected = selected === "team1";
-                  const t2Selected = selected === "team2";
-
-                  return (
-                    <div key={match.court} className="court-card winner-mode">
-                      <div className="court-title">Court {match.court}</div>
-
-                      <div
-                        className={
-                          "team-box clickable " +
-                          (t1Selected
-                            ? "winner-selected"
-                            : t2Selected
-                            ? "loser-dim"
-                            : "")
-                        }
-                        onClick={() => selectWinner(match.court, "team1")}
-                      >
-                        {match.team1.map((p) => (
-                          <div key={p.id} className="player-chip">
-                            {p.name}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="vs-line">vs</div>
-
-                      <div
-                        className={
-                          "team-box clickable " +
-                          (t2Selected
-                            ? "winner-selected"
-                            : t1Selected
-                            ? "loser-dim"
-                            : "")
-                        }
-                        onClick={() => selectWinner(match.court, "team2")}
-                      >
-                        {match.team2.map((p) => (
-                          <div key={p.id} className="player-chip">
-                            {p.name}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="winner-submit-area">
-                <button
-                  className={
-                    allCourtsHaveWinners()
-                      ? "btn confirm"
-                      : "btn confirm disabled"
-                  }
-                  disabled={!allCourtsHaveWinners()}
-                  onClick={confirmResults}
-                >
-                  Confirm Results
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* PRESENCE PANEL */}
-          <div className="presence-section">
-            <h3>Present Players</h3>
-            <div className="presence-list">
-              {players.map((p) => (
-                <div
+            <div className="list-box glass">
+              {notPresentPlayers.map((p) => (
+                <PlayerRow
                   key={p.id}
-                  className={
-                    "presence-pill " + (p.is_present ? "present" : "absent")
-                  }
-                  onDoubleClick={() => togglePresence(p.id)}
-                >
-                  {p.name}
-                </div>
+                  player={p}
+                  onClick={() => togglePresent(p)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="list-col">
+            <div className="list-head">
+              Present <span className="badge">{presentPlayers.length}</span>
+            </div>
+            <div className="list-box glass">
+              {presentPlayers.map((p) => (
+                <PlayerRow
+                  key={p.id}
+                  player={p}
+                  onClick={() => togglePresent(p)}
+                  present
+                />
               ))}
             </div>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {/* SETTINGS MODAL */}
-      {settingsOpen && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <div className="modal-head">
-              <h3>Settings</h3>
-              <button className="close-btn" onClick={closeSettings}>
-                ×
-              </button>
-            </div>
+  function LeaderboardTab() {
+    return (
+      <div className="page">
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Leaderboard</h3>
+            <div className="muted">Lifetime stats</div>
+          </div>
 
-            <div className="modal-body">
-              <div className="setting-row">
-                <label>Round Duration (minutes)</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  value={Math.round(settings.roundDuration / 60)}
-                  onChange={(e) => {
-                    const mins = Number(e.target.value) || 1;
-                    const seconds = Math.max(60, mins * 60);
-                    saveSettings({
-                      ...settings,
-                      roundDuration: seconds
-                    });
-                  }}
-                />
-              </div>
+          <div className="table-wrap">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Name</th>
+                  <th>Gender</th>
+                  <th>ELO</th>
+                  <th>Tier</th>
+                  <th>Wins</th>
+                  <th>Losses</th>
+                  <th>Matches</th>
+                  <th>Win %</th>
+                  <th>Current Streak</th>
+                  <th>Best Session</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.map((p, index) => {
+                  const matchesPlayed = Number(p.matches_played || 0);
+                  const winPct = matchesPlayed
+                    ? ((Number(p.wins || 0) / matchesPlayed) * 100).toFixed(1)
+                    : '0.0';
 
-              <div className="setting-row">
-                <label>Warning Time (seconds)</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  value={settings.warningTime}
-                  onChange={(e) => {
-                    const sec = Math.max(0, Number(e.target.value) || 0);
-                    saveSettings({
-                      ...settings,
-                      warningTime: sec
-                    });
-                  }}
-                />
-              </div>
-
-              <div className="setting-row">
-                <label>Transition Time (seconds)</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={10}
-                  value={settings.transitionTime}
-                  onChange={(e) => {
-                    const sec = Math.max(10, Number(e.target.value) || 10);
-                    saveSettings({
-                      ...settings,
-                      transitionTime: sec
-                    });
-                  }}
-                />
-              </div>
-
-              <div className="setting-row">
-                <label>Courts Available</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={settings.courtCount}
-                  onChange={(e) => {
-                    const courts = Math.max(
-                      1,
-                      Math.min(8, Number(e.target.value) || 1)
-                    );
-                    saveSettings({
-                      ...settings,
-                      courtCount: courts
-                    });
-                  }}
-                />
-              </div>
-
-              <div className="setting-row">
-                <label>ELO K-Factor</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={4}
-                  max={64}
-                  value={settings.kFactor}
-                  onChange={(e) => {
-                    const k = Math.max(
-                      4,
-                      Math.min(64, Number(e.target.value) || 4)
-                    );
-                    saveSettings({
-                      ...settings,
-                      kFactor: k
-                    });
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="modal-foot">
-              <button className="btn" onClick={closeSettings}>
-                Close
-              </button>
-            </div>
+                  return (
+                    <tr key={p.id}>
+                      <td className="center">{index + 1}</td>
+                      <td>{p.name}</td>
+                      <td className="center">{p.gender}</td>
+                      <td className="center"><b>{p.elo_rating}</b></td>
+                      <td className="center">{displayTier(p)}</td>
+                      <td className="center">{p.wins}</td>
+                      <td className="center">{p.losses}</td>
+                      <td className="center">{p.matches_played}</td>
+                      <td className="center">{winPct}%</td>
+                      <td className="center">{formatSigned(p.current_streak)}</td>
+                      <td className="center">{formatSigned(p.best_session_elo_gain)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {/* SESSION SUMMARY + DIAGNOSTICS MODAL */}
-      {summaryOpen && (
-        <div className="modal-backdrop">
-          <div className="modal large">
-            <div className="modal-head">
-              <h3>Session Summary & System Diagnostics</h3>
-              <button className="close-btn" onClick={closeSummaryModal}>
-                ×
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <div className="panel glass">
-                <h4>Session Summary</h4>
-                <div className="table-wrap">
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>Player</th>
-                        <th>Matches</th>
-                        <th>Wins</th>
-                        <th>Losses</th>
-                        <th>ELO Δ (Session)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {summaryData && summaryData.players.length > 0 ? (
-                        summaryData.players.map((p) => (
-                          <tr key={p.id}>
-                            <td>{p.name}</td>
-                            <td>{p.matches}</td>
-                            <td>{p.wins}</td>
-                            <td>{p.losses}</td>
-                            <td>{p.eloChange}</td>
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={5}>No matches recorded this session.</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="panel glass">
-                <h4>System Diagnostics</h4>
-                <ul className="diagnostics-list">
-                  <li>
-                    Total Players in System:{" "}
-                    {diagnosticsData?.totalPlayers ?? 0}
-                  </li>
-                  <li>
-                    Players Who Played This Session:{" "}
-                    {diagnosticsData?.playersWhoPlayed ?? 0}
-                  </li>
-                  <li>
-                    Rounds Completed (approx):{" "}
-                    {diagnosticsData?.roundsCompleted ?? 0}
-                  </li>
-                  <li>
-                    Max Bench Count:{" "}
-                    {diagnosticsData?.maxBenchCount ?? 0}
-                  </li>
-                  <li>
-                    Avg Bench Count:{" "}
-                    {diagnosticsData?.avgBenchCount ?? 0}
-                  </li>
-                  <li>
-                    Courts Used:{" "}
-                    {diagnosticsData?.settingsSnapshot?.courtCount ?? 0}
-                  </li>
-                  <li>
-                    Round Duration (sec):{" "}
-                    {diagnosticsData?.settingsSnapshot?.roundDuration ?? 0}
-                  </li>
-                  <li>
-                    Transition Time (sec):{" "}
-                    {diagnosticsData?.settingsSnapshot?.transitionTime ?? 0}
-                  </li>
-                  <li>
-                    Warning Time (sec):{" "}
-                    {diagnosticsData?.settingsSnapshot?.warningTime ?? 0}
-                  </li>
-                  <li>
-                    ELO K-Factor:{" "}
-                    {diagnosticsData?.settingsSnapshot?.kFactor ?? 0}
-                  </li>
-                </ul>
-              </div>
-            </div>
-
-            <div className="modal-foot">
-              <button className="btn" onClick={closeSummaryModal}>
-                Close & Return Home
-              </button>
-            </div>
+  function SettingsTab() {
+    return (
+      <div className="page">
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Settings</h3>
           </div>
-        </div>
-      )}
 
-      {/* ADMIN KEY INPUT MODAL */}
-      {!adminKey && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <div className="modal-head">
-              <h3>Admin Access</h3>
-            </div>
-
-            <div className="modal-body">
-              <p>Enter admin key to enable editing, resets, and presence updates.</p>
+          <div className="settings-grid">
+            <div className="setting">
+              <label>Stage 1 Match Length (minutes)</label>
               <input
                 className="input"
-                type="password"
-                onChange={(e) => setAdminKey(e.target.value)}
-                placeholder="Admin key"
+                type="number"
+                min="3"
+                max="60"
+                value={matchMinutes}
+                onChange={(e) => setMatchMinutes(Number(e.target.value))}
               />
             </div>
 
-            <div className="modal-foot">
-              <button
-                className="btn"
-                onClick={() => {
-                  sessionStorage.setItem("adminKey", adminKey);
-                }}
+            <div className="setting">
+              <label>Stage 2 Warning Threshold (seconds left)</label>
+              <input
+                className="input"
+                type="number"
+                min="5"
+                max="120"
+                value={warningSeconds}
+                onChange={(e) => setWarningSeconds(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="setting">
+              <label>Stage 3/4 Transition + Winner Selection (seconds)</label>
+              <input
+                className="input"
+                type="number"
+                min="10"
+                max="180"
+                value={transitionSeconds}
+                onChange={(e) => setTransitionSeconds(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="setting">
+              <label>Stage 5 New Match Beginning (seconds)</label>
+              <input
+                className="input"
+                type="number"
+                min="5"
+                max="180"
+                value={preRoundSeconds}
+                onChange={(e) => setPreRoundSeconds(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="setting">
+              <label>Courts Available</label>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                max="12"
+                value={courtsCount}
+                onChange={(e) => setCourtsCount(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="setting">
+              <label>Default ELO K-Factor</label>
+              <input
+                className="input"
+                type="number"
+                min="8"
+                max="64"
+                value={kFactor}
+                onChange={(e) => setKFactor(Number(e.target.value))}
+              />
+            </div>
+
+            <div className="setting">
+              <label>Matchmaking Mode</label>
+              <select
+                className="input"
+                value={matchMode}
+                onChange={(e) => setMatchModeState(e.target.value)}
               >
-                Enter
-              </button>
+                <option value={MATCH_MODES.WINDOW}>Window</option>
+                <option value={MATCH_MODES.BAND}>Band</option>
+              </select>
+            </div>
+
+            <div className="setting">
+              <label>Sound Volume (0–1)</label>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="1"
+                step="0.05"
+                value={volume}
+                onChange={(e) => setVolume(Number(e.target.value))}
+              />
             </div>
           </div>
+
+          <div className="settings-note">
+            <div><b>Defaults locked from your latest clarification:</b></div>
+            <div>Stage 5 = 30s • Stage 1 = 10 mins • Stage 2 = 30s left • Stage 3/4 = 60s</div>
+            <div>No winner selected by end of transition = no rating change.</div>
+          </div>
+
+          <div className="right mt-12">
+            <button className="btn primary" onClick={saveSettings}>
+              Save Settings
+            </button>
+          </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="page centered">
+        <div className="muted">Loading players…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <Navigation />
+
+      {tab === TABS.HOME && <HomeTab />}
+      {tab === TABS.PLAYERS && <PlayerManagementTab />}
+      {tab === TABS.SESSION && <SessionTab />}
+      {tab === TABS.LEADERBOARD && <LeaderboardTab />}
+      {tab === TABS.SETTINGS && <SettingsTab />}
     </div>
   );
+}
+
+/* ================= Components ================= */
+
+function PlayerRow({ player, onClick, present = false }) {
+  return (
+    <div className={`row-player ${present ? 'present' : ''}`} onClick={onClick}>
+      <span className="name">{player.name}</span>
+      <span className="meta">
+        <span className={`pill sm ${player.gender === 'F' ? 'female' : 'male'}`}>{player.gender}</span>
+        <span>ELO {player.elo_rating}</span>
+        <span>T{displayTier(player)}</span>
+      </span>
+    </div>
+  );
+}
+
+function CourtCard({ match, phase, selectedWinner, onPickWinner, onClearWinner }) {
+  const canPick = phase === PHASES.TRANSITION;
+
+  return (
+    <div className="court glass">
+      <div className="court-head">
+        <h3>Court {match.court}</h3>
+        <div className="avg-pair">
+          <span className="avg">Team 1 Avg: <b>{Math.round(match.avg1)}</b></span>
+          <span className="avg">Team 2 Avg: <b>{Math.round(match.avg2)}</b></span>
+        </div>
+      </div>
+
+      <div className="team-block">
+        <div className={`team-card ${selectedWinner === 1 ? 'winner' : ''}`}>
+          <div className="team-title">Team 1</div>
+          <div className="team-line">
+            {match.team1.map((p) => (
+              <div className="tag" key={p.id}>
+                <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                {p.name}
+              </div>
+            ))}
+          </div>
+          <button
+            className={`winner-btn ${selectedWinner === 1 ? 'active' : ''}`}
+            onClick={() => onPickWinner(match.court, 1)}
+            disabled={!canPick}
+          >
+            Team 1 Won
+          </button>
+        </div>
+
+        <div className="net-horizontal" />
+
+        <div className={`team-card ${selectedWinner === 2 ? 'winner' : ''}`}>
+          <div className="team-title">Team 2</div>
+          <div className="team-line">
+            {match.team2.map((p) => (
+              <div className="tag" key={p.id}>
+                <span className={`pill sm ${p.gender === 'F' ? 'female' : 'male'}`}>{p.gender}</span>
+                {p.name}
+              </div>
+            ))}
+          </div>
+          <button
+            className={`winner-btn ${selectedWinner === 2 ? 'active' : ''}`}
+            onClick={() => onPickWinner(match.court, 2)}
+            disabled={!canPick}
+          >
+            Team 2 Won
+          </button>
+        </div>
+      </div>
+
+      <div className="court-footer">
+        {canPick ? (
+          <>
+            <div className="muted">
+              {selectedWinner
+                ? `Winner selected: Team ${selectedWinner}`
+                : 'No winner selected yet. If transition ends now, no ELO points are awarded.'}
+            </div>
+            <button className="btn ghost" onClick={() => onClearWinner(match.court)}>
+              Clear Selection
+            </button>
+          </>
+        ) : (
+          <div className="muted">Winner selection opens during Stage 3/4.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ================= Utilities ================= */
+
+function formatSigned(n) {
+  const value = Number(n || 0);
+  if (value > 0) return `+${value}`;
+  return String(value);
+}
+
+function buildSessionSummary(players, gainMap, history, rounds) {
+  const resolved = history.filter((x) => x.type === 'round_resolved');
+  const allResults = resolved.flatMap((x) => x.results || []);
+  const completedMatches = allResults.filter((x) => x.status === 'completed').length;
+  const noResultMatches = allResults.filter((x) => x.status === 'no_result').length;
+
+  let topGain = 0;
+  let topGainName = '';
+
+  players.forEach((player) => {
+    const gain = Number(gainMap.get(player.id) || 0);
+    if (gain > topGain) {
+      topGain = gain;
+      topGainName = player.name;
+    }
+  });
+
+  return {
+    rounds,
+    completedMatches,
+    noResultMatches,
+    topGain,
+    topGainName,
+  };
 }
