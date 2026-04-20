@@ -23,6 +23,26 @@ function safeNum(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function normalizeJoinedPlayer(row) {
+  const player = row?.players || null;
+  return {
+    ...row,
+    player_name: player?.name || null,
+    player_gender: player?.gender || null,
+    player_elo_rating: player?.elo_rating ?? null,
+  };
+}
+
+function normalizeJoinedMatchPlayer(row) {
+  const player = row?.players || null;
+  return {
+    ...row,
+    player_name: player?.name || null,
+    player_gender: player?.gender || null,
+    player_elo_rating: player?.elo_rating ?? null,
+  };
+}
+
 export default async (req) => {
   try {
     const method = req.method;
@@ -248,7 +268,18 @@ export default async (req) => {
 
         const { data: matches, error: matchesError } = await supabase
           .from('matches')
-          .select('*, match_players(*)')
+          .select(`
+            *,
+            match_players (
+              *,
+              players (
+                id,
+                name,
+                gender,
+                elo_rating
+              )
+            )
+          `)
           .eq('session_id', sessionId)
           .order('round_number', { ascending: true })
           .order('court_number', { ascending: true });
@@ -258,9 +289,24 @@ export default async (req) => {
           return J(500, { error: matchesError.message || String(matchesError) });
         }
 
+        const normalizedMatches = (matches || []).map((match) => ({
+          ...match,
+          match_players: Array.isArray(match.match_players)
+            ? match.match_players.map(normalizeJoinedMatchPlayer)
+            : [],
+        }));
+
         const { data: sessionPlayers, error: spError } = await supabase
           .from('session_players')
-          .select('*')
+          .select(`
+            *,
+            players (
+              id,
+              name,
+              gender,
+              elo_rating
+            )
+          `)
           .eq('session_id', sessionId);
 
         if (spError) {
@@ -268,10 +314,12 @@ export default async (req) => {
           return J(500, { error: spError.message || String(spError) });
         }
 
+        const normalizedSessionPlayers = (sessionPlayers || []).map(normalizeJoinedPlayer);
+
         return J(200, {
           session,
-          matches: matches || [],
-          session_players: sessionPlayers || [],
+          matches: normalizedMatches,
+          session_players: normalizedSessionPlayers,
         });
       }
 

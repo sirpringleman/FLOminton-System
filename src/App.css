@@ -538,3 +538,7 @@ body{
     grid-template-columns:1fr;
   }
 }
+
+.history-player-item .pill{
+  margin-right:6px;
+}

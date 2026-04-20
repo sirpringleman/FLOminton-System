@@ -1806,7 +1806,8 @@ function SessionHistoryTab({
                     <table className="table">
                       <thead>
                         <tr>
-                          <th>Player ID</th>
+                          <th>Name</th>
+                          <th>Gender</th>
                           <th>Start ELO</th>
                           <th>End ELO</th>
                           <th>ELO Gain</th>
@@ -1822,7 +1823,8 @@ function SessionHistoryTab({
                           .sort((a, b) => Number(b.elo_gain || 0) - Number(a.elo_gain || 0))
                           .map((row) => (
                             <tr key={row.id}>
-                              <td>{row.player_id}</td>
+                              <td>{row.player_name || row.player_id}</td>
+                              <td className="center">{row.player_gender || '—'}</td>
                               <td className="center">{row.starting_elo}</td>
                               <td className="center">{row.ending_elo ?? '—'}</td>
                               <td className="center">{formatSigned(row.elo_gain)}</td>
@@ -1877,7 +1879,12 @@ function SessionHistoryTab({
                                     {playersByTeam.team1.length ? (
                                       playersByTeam.team1.map((p) => (
                                         <div key={p.id} className="history-player-item">
-                                          <span>{p.player_id}</span>
+                                          <span>
+                                            <span className={`pill sm ${p.player_gender === 'F' ? 'female' : 'male'}`}>
+                                              {p.player_gender || '?'}
+                                            </span>{' '}
+                                            {p.player_name || p.player_id}
+                                          </span>
                                           <span className="muted">
                                             {p.elo_before}
                                             {p.elo_after !== null && p.elo_after !== undefined
@@ -1900,7 +1907,12 @@ function SessionHistoryTab({
                                     {playersByTeam.team2.length ? (
                                       playersByTeam.team2.map((p) => (
                                         <div key={p.id} className="history-player-item">
-                                          <span>{p.player_id}</span>
+                                          <span>
+                                            <span className={`pill sm ${p.player_gender === 'F' ? 'female' : 'male'}`}>
+                                              {p.player_gender || '?'}
+                                            </span>{' '}
+                                            {p.player_name || p.player_id}
+                                          </span>
                                           <span className="muted">
                                             {p.elo_before}
                                             {p.elo_after !== null && p.elo_after !== undefined
