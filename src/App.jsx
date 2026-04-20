@@ -142,13 +142,16 @@ function normalizePlayer(p) {
   const elo = Number(p?.elo_rating);
   const finalElo = Number.isFinite(elo) && elo > 0 ? elo : inferredElo;
 
-  return {
+  const player = {
     id: p?.id ?? cryptoRandomId(),
     name: String(p?.name || '').trim(),
     gender: p?.gender === 'F' ? 'F' : 'M',
     is_present: !!p?.is_present,
     elo_rating: finalElo,
-    skill_level: Number.isFinite(seededSkill) && seededSkill > 0 ? seededSkill : displayTier({ elo_rating: finalElo }),
+    skill_level:
+      Number.isFinite(seededSkill) && seededSkill > 0
+        ? seededSkill
+        : displayTier({ elo_rating: finalElo }),
     bench_count: Number(p?.bench_count) || 0,
     last_played_round: Number(p?.last_played_round) || 0,
     wins: Number(p?.wins) || 0,
@@ -157,9 +160,12 @@ function normalizePlayer(p) {
     current_streak: Number(p?.current_streak) || 0,
     best_streak: Number(p?.best_streak) || 0,
     best_session_elo_gain: Number(p?.best_session_elo_gain) || 0,
-    created_at: p?.created_at || null,
-    updated_at: p?.updated_at || null,
   };
+
+  if (p?.created_at) player.created_at = p.created_at;
+  if (p?.updated_at) player.updated_at = p.updated_at;
+
+  return player;
 }
 
 function cryptoRandomId() {
