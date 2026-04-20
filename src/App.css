@@ -411,3 +411,130 @@ body{
     grid-template-columns:1fr;
   }
 }
+
+.history-layout{
+  display:grid;
+  grid-template-columns: 360px 1fr;
+  gap:12px;
+  align-items:start;
+}
+
+.history-session-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.history-session-item{
+  appearance:none;
+  width:100%;
+  text-align:left;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.03);
+  color:var(--text);
+  border-radius:12px;
+  padding:12px;
+  cursor:pointer;
+}
+.history-session-item:hover{
+  background:rgba(255,255,255,.05);
+}
+.history-session-item.active{
+  border-color:rgba(90,169,255,.45);
+  background:linear-gradient(180deg, rgba(90,169,255,.18), rgba(90,169,255,.08));
+}
+.history-session-title{
+  font-weight:800;
+  margin-bottom:6px;
+}
+.history-session-meta{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  color:var(--muted);
+  font-size:13px;
+}
+
+.inner-panel{
+  margin-top:12px;
+}
+
+.history-rounds{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.history-round-block{
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:12px;
+  background:rgba(255,255,255,.02);
+}
+.history-round-title{
+  font-weight:800;
+  margin-bottom:10px;
+  font-size:16px;
+}
+.history-match-card{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:12px;
+  background:rgba(255,255,255,.03);
+  margin-top:10px;
+}
+.history-match-head{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  margin-bottom:10px;
+  flex-wrap:wrap;
+}
+.history-teams-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:12px;
+}
+.history-team{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:10px;
+  background:rgba(255,255,255,.02);
+}
+.history-team.winner{
+  border-color:rgba(69,212,138,.55);
+  box-shadow:0 0 0 2px rgba(69,212,138,.10);
+}
+.history-player-list{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.history-player-item{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+}
+.history-match-foot{
+  margin-top:10px;
+}
+.error-box{
+  border:1px solid rgba(255,90,109,.45);
+  background:rgba(255,90,109,.10);
+  color:#ffd7dc;
+  padding:12px;
+  border-radius:12px;
+}
+
+@media (max-width: 1100px){
+  .history-layout{
+    grid-template-columns:1fr;
+  }
+}
+
+@media (max-width: 800px){
+  .history-teams-grid{
+    grid-template-columns:1fr;
+  }
+}

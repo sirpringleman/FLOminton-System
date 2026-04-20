@@ -188,6 +188,42 @@ const APIClient = {
 
     return data;
   },
+
+  async listSessions() {
+    const res = await fetch(SESSIONS_API, { method: 'GET' });
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = [];
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Failed to load sessions');
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getSessionDetails(sessionId) {
+    const res = await fetch(`${SESSIONS_API}?session_id=${encodeURIComponent(sessionId)}`, {
+      method: 'GET',
+    });
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+
+    if (!res.ok) {
+      throw new Error(data?.error || data?.message || 'Failed to load session details');
+    }
+
+    return data;
+  },
 };
 
 /* ================= Local Storage ================= */
@@ -295,6 +331,7 @@ const TABS = {
   PLAYERS: 'players',
   SESSION: 'session',
   LEADERBOARD: 'leaderboard',
+  HISTORY: 'history',
   SETTINGS: 'settings',
 };
 
@@ -347,6 +384,14 @@ export default function App() {
   const [sessionHistory, setSessionHistory] = useState([]);
   const [sessionSummary, setSessionSummary] = useState(null);
 
+  const [historySessions, setHistorySessions] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [historySelectedId, setHistorySelectedId] = useState(null);
+  const [historyDetails, setHistoryDetails] = useState(null);
+  const [historyDetailsLoading, setHistoryDetailsLoading] = useState(false);
+  const [historyDetailsError, setHistoryDetailsError] = useState('');
+
   const [newPlayerName, setNewPlayerName] = useState('');
   const [newPlayerGender, setNewPlayerGender] = useState('M');
   const [newPlayerElo, setNewPlayerElo] = useState(1000);
@@ -398,6 +443,11 @@ export default function App() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (tab !== TABS.HISTORY) return;
+    loadHistorySessions();
+  }, [tab]);
 
   const presentPlayers = useMemo(
     () => players.filter((p) => p.is_present).sort((a, b) => a.name.localeCompare(b.name)),
@@ -471,6 +521,39 @@ export default function App() {
       }
     })();
   }, [phaseRemaining, phase, running, matchMinutes, transitionSeconds, warningSeconds]);
+
+  /* ================= Session History loaders ================= */
+
+  async function loadHistorySessions() {
+    setHistoryLoading(true);
+    setHistoryError('');
+    try {
+      const sessions = await APIClient.listSessions();
+      setHistorySessions(sessions);
+    } catch (err) {
+      console.error(err);
+      setHistoryError(err.message || 'Failed to load sessions.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function openSessionHistory(sessionId) {
+    setHistorySelectedId(sessionId);
+    setHistoryDetails(null);
+    setHistoryDetailsError('');
+    setHistoryDetailsLoading(true);
+
+    try {
+      const details = await APIClient.getSessionDetails(sessionId);
+      setHistoryDetails(details);
+    } catch (err) {
+      console.error(err);
+      setHistoryDetailsError(err.message || 'Failed to load session details.');
+    } finally {
+      setHistoryDetailsLoading(false);
+    }
+  }
 
   /* ================= Session building ================= */
 
@@ -1114,6 +1197,20 @@ export default function App() {
 
       {tab === TABS.LEADERBOARD && <LeaderboardTab leaderboard={leaderboard} />}
 
+      {tab === TABS.HISTORY && (
+        <SessionHistoryTab
+          sessions={historySessions}
+          loading={historyLoading}
+          error={historyError}
+          selectedId={historySelectedId}
+          details={historyDetails}
+          detailsLoading={historyDetailsLoading}
+          detailsError={historyDetailsError}
+          onRefresh={loadHistorySessions}
+          onOpenSession={openSessionHistory}
+        />
+      )}
+
       {tab === TABS.SETTINGS && (
         <SettingsTab
           matchMinutes={matchMinutes}
@@ -1160,6 +1257,12 @@ function Navigation({ tab, setTab, isAdmin, onAdminLogin, onAdminLogout }) {
         Leaderboard
       </button>
       <button
+        className={`nav-btn ${tab === TABS.HISTORY ? 'active' : ''}`}
+        onClick={() => setTab(TABS.HISTORY)}
+      >
+        Session History
+      </button>
+      <button
         className={`nav-btn ${tab === TABS.SETTINGS ? 'active' : ''}`}
         onClick={() => setTab(TABS.SETTINGS)}
       >
@@ -1200,6 +1303,9 @@ function HomeTab({ sessionSummary, setTab, activeSessionId }) {
           </button>
           <button className="btn" onClick={() => setTab(TABS.LEADERBOARD)}>
             Leaderboard
+          </button>
+          <button className="btn" onClick={() => setTab(TABS.HISTORY)}>
+            Session History
           </button>
           <button className="btn" onClick={() => setTab(TABS.SETTINGS)}>
             Settings
@@ -1590,6 +1696,247 @@ function LeaderboardTab({ leaderboard }) {
   );
 }
 
+function SessionHistoryTab({
+  sessions,
+  loading,
+  error,
+  selectedId,
+  details,
+  detailsLoading,
+  detailsError,
+  onRefresh,
+  onOpenSession,
+}) {
+  const groupedMatches = useMemo(() => {
+    if (!details?.matches?.length) return [];
+    const groups = new Map();
+
+    details.matches.forEach((match) => {
+      const round = Number(match.round_number || 0);
+      if (!groups.has(round)) groups.set(round, []);
+      groups.get(round).push(match);
+    });
+
+    return Array.from(groups.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([round, matches]) => ({
+        round,
+        matches: matches.slice().sort((a, b) => Number(a.court_number || 0) - Number(b.court_number || 0)),
+      }));
+  }, [details]);
+
+  return (
+    <div className="page">
+      <div className="history-layout">
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Saved Sessions</h3>
+            <button className="btn" onClick={onRefresh}>
+              Refresh
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="muted p-12">Loading sessions…</div>
+          ) : error ? (
+            <div className="error-box">{error}</div>
+          ) : sessions.length === 0 ? (
+            <div className="muted p-12">No saved sessions found.</div>
+          ) : (
+            <div className="history-session-list">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  className={`history-session-item ${selectedId === session.id ? 'active' : ''}`}
+                  onClick={() => onOpenSession(session.id)}
+                >
+                  <div className="history-session-title">
+                    {formatDateTime(session.started_at)}
+                  </div>
+                  <div className="history-session-meta">
+                    <span>Status: {session.status || '—'}</span>
+                    <span>Rounds: {session.rounds_played ?? 0}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="panel glass">
+          <div className="panel-head">
+            <h3>Session Details</h3>
+          </div>
+
+          {!selectedId ? (
+            <div className="muted p-12">Select a session to view full details.</div>
+          ) : detailsLoading ? (
+            <div className="muted p-12">Loading session details…</div>
+          ) : detailsError ? (
+            <div className="error-box">{detailsError}</div>
+          ) : !details?.session ? (
+            <div className="muted p-12">No details found for this session.</div>
+          ) : (
+            <>
+              <div className="summary-grid">
+                <div className="summary-card">
+                  <div className="summary-label">Started</div>
+                  <div className="summary-value small">{formatDateTime(details.session.started_at)}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Ended</div>
+                  <div className="summary-value small">{formatDateTime(details.session.ended_at)}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Status</div>
+                  <div className="summary-value small">{details.session.status || '—'}</div>
+                </div>
+                <div className="summary-card">
+                  <div className="summary-label">Rounds</div>
+                  <div className="summary-value">{details.session.rounds_played ?? 0}</div>
+                </div>
+              </div>
+
+              <div className="panel glass inner-panel">
+                <div className="panel-head">
+                  <h4>Session Players</h4>
+                </div>
+                {details.session_players?.length ? (
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Player ID</th>
+                          <th>Start ELO</th>
+                          <th>End ELO</th>
+                          <th>ELO Gain</th>
+                          <th>Wins</th>
+                          <th>Losses</th>
+                          <th>Matches</th>
+                          <th>Benched</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {details.session_players
+                          .slice()
+                          .sort((a, b) => Number(b.elo_gain || 0) - Number(a.elo_gain || 0))
+                          .map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.player_id}</td>
+                              <td className="center">{row.starting_elo}</td>
+                              <td className="center">{row.ending_elo ?? '—'}</td>
+                              <td className="center">{formatSigned(row.elo_gain)}</td>
+                              <td className="center">{row.wins}</td>
+                              <td className="center">{row.losses}</td>
+                              <td className="center">{row.matches_played}</td>
+                              <td className="center">{row.benched_count}</td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="muted p-8">No session player rows found.</div>
+                )}
+              </div>
+
+              <div className="panel glass inner-panel">
+                <div className="panel-head">
+                  <h4>Round-by-Round Match History</h4>
+                </div>
+
+                {!groupedMatches.length ? (
+                  <div className="muted p-8">No matches found for this session.</div>
+                ) : (
+                  <div className="history-rounds">
+                    {groupedMatches.map((group) => (
+                      <div key={group.round} className="history-round-block">
+                        <div className="history-round-title">Round {group.round}</div>
+
+                        {group.matches.map((match) => {
+                          const playersByTeam = splitMatchPlayers(match.match_players || []);
+                          return (
+                            <div key={match.id} className="history-match-card">
+                              <div className="history-match-head">
+                                <div>
+                                  <b>Court {match.court_number}</b>
+                                </div>
+                                <div className="muted">
+                                  {match.status === 'no_result'
+                                    ? 'No Result'
+                                    : match.winner_team
+                                      ? `Winner: Team ${match.winner_team}`
+                                      : 'Pending'}
+                                </div>
+                              </div>
+
+                              <div className="history-teams-grid">
+                                <div className={`history-team ${match.winner_team === 1 ? 'winner' : ''}`}>
+                                  <div className="team-title">Team 1</div>
+                                  <div className="history-player-list">
+                                    {playersByTeam.team1.length ? (
+                                      playersByTeam.team1.map((p) => (
+                                        <div key={p.id} className="history-player-item">
+                                          <span>{p.player_id}</span>
+                                          <span className="muted">
+                                            {p.elo_before}
+                                            {p.elo_after !== null && p.elo_after !== undefined
+                                              ? ` → ${p.elo_after}`
+                                              : ''}
+                                            {' '}
+                                            ({formatSigned(p.elo_delta)})
+                                          </span>
+                                        </div>
+                                      ))
+                                    ) : (
+                                      <div className="muted">No players recorded</div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className={`history-team ${match.winner_team === 2 ? 'winner' : ''}`}>
+                                  <div className="team-title">Team 2</div>
+                                  <div className="history-player-list">
+                                    {playersByTeam.team2.length ? (
+                                      playersByTeam.team2.map((p) => (
+                                        <div key={p.id} className="history-player-item">
+                                          <span>{p.player_id}</span>
+                                          <span className="muted">
+                                            {p.elo_before}
+                                            {p.elo_after !== null && p.elo_after !== undefined
+                                              ? ` → ${p.elo_after}`
+                                              : ''}
+                                            {' '}
+                                            ({formatSigned(p.elo_delta)})
+                                          </span>
+                                        </div>
+                                      ))
+                                    ) : (
+                                      <div className="muted">No players recorded</div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="history-match-foot muted">
+                                Team averages: {match.team1_avg_elo ?? '—'} vs {match.team2_avg_elo ?? '—'}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsTab({
   matchMinutes,
   setMatchMinutes,
@@ -1825,6 +2172,20 @@ function formatSigned(n) {
   const value = Number(n || 0);
   if (value > 0) return `+${value}`;
   return String(value);
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+function splitMatchPlayers(matchPlayers) {
+  return {
+    team1: matchPlayers.filter((p) => Number(p.team_number) === 1),
+    team2: matchPlayers.filter((p) => Number(p.team_number) === 2),
+  };
 }
 
 function buildSessionSummary(players, gainMap, history, rounds) {
