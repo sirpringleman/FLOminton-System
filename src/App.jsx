@@ -470,9 +470,9 @@ export default function App() {
   }, [players]);
 
   const activePhaseLabel = useMemo(() => {
-    if (phase === PHASES.PRE_ROUND) return 'Stage 5 • New Match Beginning';
-    if (phase === PHASES.MATCH) return 'Stage 1 • Match Live';
-    if (phase === PHASES.TRANSITION) return 'Stage 3/4 • Match Ended + Transition';
+    if (phase === PHASES.PRE_ROUND) return 'Pre-Game';
+    if (phase === PHASES.MATCH) return 'Game';
+    if (phase === PHASES.TRANSITION) return 'Transition Period';
     return 'Idle';
   }, [phase]);
 
@@ -495,7 +495,7 @@ export default function App() {
     if (!running) return;
 
     if (phase === PHASES.MATCH && phaseRemaining === warningSeconds) {
-      beep(1200, 900);
+      beep(100, 900);
     }
 
     if (phaseRemaining !== 0) return;
@@ -1980,11 +1980,11 @@ function SettingsTab({
 
         <div className="settings-grid">
           <div className="setting">
-            <label>Stage 1 Match Length (minutes)</label>
+            <label>Game Length (minutes)</label>
             <input
               className="input"
               type="number"
-              min="3"
+              min="1"
               max="60"
               value={matchMinutes}
               onChange={(e) => setMatchMinutes(Number(e.target.value))}
@@ -1992,7 +1992,7 @@ function SettingsTab({
           </div>
 
           <div className="setting">
-            <label>Stage 2 Warning Threshold (seconds left)</label>
+            <label>Warning Threshold (seconds left)</label>
             <input
               className="input"
               type="number"
@@ -2004,7 +2004,7 @@ function SettingsTab({
           </div>
 
           <div className="setting">
-            <label>Stage 3/4 Transition + Winner Selection (seconds)</label>
+            <label>Transition Period (seconds)</label>
             <input
               className="input"
               type="number"
@@ -2016,7 +2016,7 @@ function SettingsTab({
           </div>
 
           <div className="setting">
-            <label>Stage 5 New Match Beginning (seconds)</label>
+            <label>Pre-Game (seconds)</label>
             <input
               className="input"
               type="number"
@@ -2033,7 +2033,7 @@ function SettingsTab({
               className="input"
               type="number"
               min="1"
-              max="12"
+              max="6"
               value={courtsCount}
               onChange={(e) => setCourtsCount(Number(e.target.value))}
             />
@@ -2044,8 +2044,8 @@ function SettingsTab({
             <input
               className="input"
               type="number"
-              min="8"
-              max="64"
+              min="1"
+              max="200"
               value={kFactor}
               onChange={(e) => setKFactor(Number(e.target.value))}
             />
@@ -2064,13 +2064,13 @@ function SettingsTab({
           </div>
 
           <div className="setting">
-            <label>Sound Volume (0–1)</label>
+            <label>Sound Volume (0–100)</label>
             <input
               className="input"
               type="number"
               min="0"
-              max="1"
-              step="0.05"
+              max="100"
+              step="1"
               value={volume}
               onChange={(e) => setVolume(Number(e.target.value))}
             />
@@ -2078,8 +2078,8 @@ function SettingsTab({
         </div>
 
         <div className="settings-note">
-          <div><b>Defaults locked from your latest clarification:</b></div>
-          <div>Stage 5 = 30s • Stage 1 = 10 mins • Stage 2 = 30s left • Stage 3/4 = 60s</div>
+          <div><b>Default Settings</b></div>
+          <div>Pre-Game = 30s • Game = 10 mins • Warning Threshold = 30s left • Transition Period = 60s</div>
           <div>No winner selected by end of transition = no rating change.</div>
         </div>
 
