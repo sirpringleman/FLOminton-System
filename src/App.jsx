@@ -735,10 +735,10 @@ export default function App() {
       alert('Admin mode required.');
       return;
     }
-
+  
     const name = newPlayerName.trim();
     if (!name) return;
-
+  
     const player = normalizePlayer({
       id: cryptoRandomId(),
       name,
@@ -754,17 +754,17 @@ export default function App() {
       best_streak: 0,
       best_session_elo_gain: 0,
     });
-
+  
     setPlayers((prev) => [...prev, player].sort((a, b) => a.name.localeCompare(b.name)));
     setNewPlayerName('');
     setNewPlayerGender('M');
     setNewPlayerElo(1000);
-
+  
     try {
       await APIClient.upsert([player], adminKey);
     } catch (err) {
       console.error(err);
-      alert('Failed to add player.');
+      alert(`Failed to add player: ${err.message}`);
     }
   }
 
@@ -786,13 +786,13 @@ export default function App() {
       alert('Admin mode required.');
       return;
     }
-
+  
     try {
       await APIClient.upsert(players.map(normalizePlayer), adminKey);
       alert('Players saved.');
     } catch (err) {
       console.error(err);
-      alert('Failed to save players.');
+      alert(`Failed to save players: ${err.message}`);
     }
   }
 
