@@ -495,28 +495,28 @@ export default function App() {
     if (!running) return;
 
     if (phase === PHASES.MATCH && phaseRemaining === warningSeconds) {
-      beep(100, 900);
+      beep(1000, 5000);
     }
 
     if (phaseRemaining !== 0) return;
 
     (async () => {
       if (phaseRef.current === PHASES.PRE_ROUND) {
-        beep(950, 700);
+        beep(500, 5000);
         setPhase(PHASES.MATCH);
         setPhaseRemaining(matchMinutes * 60);
         return;
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(500, 1200);
+        beep(1500, 10000);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
       }
 
       if (phaseRef.current === PHASES.TRANSITION) {
-        beep(850, 700);
+        beep(850, 8500);
         await resolveCurrentRoundAndAdvance();
       }
     })();
