@@ -293,6 +293,7 @@ function cryptoRandomId() {
 
 function useBeep(volumeRef) {
   const ctxRef = useRef(null);
+  const unlockedRef = useRef(false);
 
   function ensure() {
     if (!ctxRef.current) {
@@ -302,24 +303,58 @@ function useBeep(volumeRef) {
     return ctxRef.current;
   }
 
-  function beep(freq = 900, ms = 250) {
-    const ctx = ensure();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
-  
-    osc.type = 'square';
-    osc.frequency.value = freq;
-  
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-  
-    gain.gain.setValueAtTime(volume, ctx.currentTime);
-  
-    osc.start();
-    osc.stop(ctx.currentTime + ms / 1000);
+  async function unlockAudio() {
+    try {
+      const ctx = ensure();
+
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      // Tiny silent buffer to help unlock audio on mobile browsers
+      const buffer = ctx.createBuffer(1, 1, 22050);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.start(0);
+
+      unlockedRef.current = true;
+      return true;
+    } catch (err) {
+      console.error('Audio unlock failed:', err);
+      return false;
+    }
   }
-  return { beep };
+
+  async function beep(freq = 900, ms = 250) {
+    try {
+      const ctx = ensure();
+
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
+
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      gain.gain.setValueAtTime(volume, ctx.currentTime);
+      gain.gain.setValueAtTime(0, ctx.currentTime + ms / 1000);
+
+      osc.start();
+      osc.stop(ctx.currentTime + ms / 1000);
+    } catch (err) {
+      console.error('Beep failed:', err);
+    }
+  }
+
+  return { beep, unlockAudio, unlockedRef };
 }
 
 /* ================= App constants ================= */
