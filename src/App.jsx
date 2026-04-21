@@ -493,7 +493,7 @@ export default function App() {
     if (!running) return;
 
     if (phase === PHASES.MATCH && phaseRemaining === warningSeconds) {
-      beep(1000, 10000);
+      beep(1000, 5000);
     }
 
     if (phaseRemaining !== 0) return;
@@ -507,14 +507,14 @@ export default function App() {
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(2500, 7500);
+        beep(1000, 7500);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
       }
 
       if (phaseRef.current === PHASES.TRANSITION) {
-        beep(500, 3000);
+        beep(500, 5000);
         await resolveCurrentRoundAndAdvance();
       }
     })();
