@@ -307,21 +307,18 @@ function useBeep(volumeRef) {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
-
+  
     osc.type = 'sine';
     osc.frequency.value = freq;
-
+  
     osc.connect(gain);
     gain.connect(ctx.destination);
-
+  
     gain.gain.setValueAtTime(volume, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + ms / 1000);
-
+  
     osc.start();
     osc.stop(ctx.currentTime + ms / 1000);
   }
-
-  return { beep };
 }
 
 /* ================= App constants ================= */
