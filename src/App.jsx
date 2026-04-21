@@ -500,21 +500,21 @@ export default function App() {
 
     (async () => {
       if (phaseRef.current === PHASES.PRE_ROUND) {
-        beep(2000, 10000);
+        beep(2000, 7000);
         setPhase(PHASES.MATCH);
         setPhaseRemaining(matchMinutes * 60);
         return;
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(1000, 7500);
+        beep(1000, 5000);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
       }
 
       if (phaseRef.current === PHASES.TRANSITION) {
-        beep(500, 5000);
+        beep(500, 3500);
         await resolveCurrentRoundAndAdvance();
       }
     })();
