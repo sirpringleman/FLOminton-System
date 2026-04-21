@@ -308,7 +308,7 @@ function useBeep(volumeRef) {
     const gain = ctx.createGain();
     const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
   
-    osc.type = 'sine';
+    osc.type = 'sawtooth';
     osc.frequency.value = freq;
   
     osc.connect(gain);
