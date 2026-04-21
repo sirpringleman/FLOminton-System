@@ -319,7 +319,6 @@ function useBeep(volumeRef) {
     osc.start();
     osc.stop(ctx.currentTime + ms / 1000);
   }
-
   return { beep };
 }
 
