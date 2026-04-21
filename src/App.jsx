@@ -500,21 +500,21 @@ export default function App() {
 
     (async () => {
       if (phaseRef.current === PHASES.PRE_ROUND) {
-        beep(10000, 15000);
+        beep(2000, 10000);
         setPhase(PHASES.MATCH);
         setPhaseRemaining(matchMinutes * 60);
         return;
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(5000, 10000);
+        beep(2500, 7500);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
       }
 
       if (phaseRef.current === PHASES.TRANSITION) {
-        beep(850, 8500);
+        beep(500, 3000);
         await resolveCurrentRoundAndAdvance();
       }
     })();
@@ -1562,7 +1562,7 @@ function SessionTab({
         <div className="panel-head">
           <h3>Matches</h3>
           <div className="muted">
-            Stage 5: {preRoundSeconds}s • Match: {matchMinutes}m • Warning: {warningSeconds}s • Transition: {transitionSeconds}s
+            Pre-Game: {preRoundSeconds}s • Game: {matchMinutes}m • Warning Threshold: {warningSeconds}s • Transition Period: {transitionSeconds}s
           </div>
         </div>
 
