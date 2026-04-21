@@ -353,7 +353,7 @@ export default function App() {
 
   const [matchMode, setMatchModeState] = useState(() => getMatchMode());
 
-  const [matchMinutes, setMatchMinutes] = useState(LS.getNum('flo.match.minutes', 10, 3, 60));
+  const [matchMinutes, setMatchMinutes] = useState(LS.getNum('flo.match.minutes', 10, 1, 60));
   const [warningSeconds, setWarningSeconds] = useState(LS.getNum('flo.warning.seconds', 30, 5, 120));
   const [transitionSeconds, setTransitionSeconds] = useState(
     LS.getNum('flo.transition.seconds', 60, 10, 180)
@@ -361,9 +361,9 @@ export default function App() {
   const [preRoundSeconds, setPreRoundSeconds] = useState(
     LS.getNum('flo.preround.seconds', 30, 5, 180)
   );
-  const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 12));
-  const [kFactor, setKFactor] = useState(LS.getNum('flo.kfactor', 24, 8, 64));
-  const [volume, setVolume] = useState(LS.getNum('flo.volume', 0.35, 0, 1));
+  const [courtsCount, setCourtsCount] = useState(LS.getNum('flo.courts', 4, 1, 6));
+  const [kFactor, setKFactor] = useState(LS.getNum('flo.kfactor', 24, 8, 200));
+  const [volume, setVolume] = useState(LS.getNum('flo.volume', 100, 0, 100));
 
   const volumeRef = useRef(volume);
   const { beep } = useBeep(volumeRef);
