@@ -308,7 +308,7 @@ function useBeep(volumeRef) {
     const gain = ctx.createGain();
     const volume = clamp(volumeRef.current ?? 0.35, 0, 1);
   
-    osc.type = 'triangle';
+    osc.type = 'square';
     osc.frequency.value = freq;
   
     osc.connect(gain);
@@ -507,14 +507,14 @@ export default function App() {
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(450, 5000);
+        beep(600, 5000);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
       }
 
       if (phaseRef.current === PHASES.TRANSITION) {
-        beep(100, 3500);
+        beep(250, 3500);
         await resolveCurrentRoundAndAdvance();
       }
     })();
