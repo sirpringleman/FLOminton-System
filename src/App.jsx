@@ -401,7 +401,7 @@ export default function App() {
   const [volume, setVolume] = useState(LS.getNum('flo.volume', 100, 0, 100));
 
   const volumeRef = useRef(volume);
-  const { beep } = useBeep(volumeRef);
+  const { beep, unlockAudio } = useBeep(volumeRef);
 
   const [sessionActive, setSessionActive] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState(null);
@@ -874,12 +874,14 @@ export default function App() {
   /* ================= Actions ================= */
 
   async function startSession() {
+    await unlockAudio();
+  
     const currentPresent = playersRef.current.filter((p) => p.is_present);
     if (currentPresent.length < 4) {
       alert('At least 4 players must be present before starting the session.');
       return;
     }
-
+  
     if (!activeSessionId) {
       try {
         const data = await APIClient.startSession(currentPresent, adminKey);
@@ -890,10 +892,10 @@ export default function App() {
         return;
       }
     }
-
+  
     setSessionActive(true);
     setSessionSummary(null);
-
+  
     if (roundNumberRef.current === 0 || matchesRef.current.length === 0) {
       await buildRoundAndEnterPreRound();
     } else {
@@ -905,17 +907,19 @@ export default function App() {
     setRunning(false);
   }
 
-  function resumeSession() {
-    if (!sessionActive) {
-      startSession();
-      return;
-    }
-    if (phase === PHASES.IDLE && matches.length) {
-      setPhase(PHASES.PRE_ROUND);
-      setPhaseRemaining(preRoundSeconds);
-    }
-    setRunning(true);
+ async function resumeSession() {
+  await unlockAudio();
+
+  if (!sessionActive) {
+    startSession();
+    return;
   }
+  if (phase === PHASES.IDLE && matches.length) {
+    setPhase(PHASES.PRE_ROUND);
+    setPhaseRemaining(preRoundSeconds);
+  }
+  setRunning(true);
+}
 
   async function nextRoundNow() {
     if (!sessionActive) {
