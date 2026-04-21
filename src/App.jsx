@@ -495,21 +495,21 @@ export default function App() {
     if (!running) return;
 
     if (phase === PHASES.MATCH && phaseRemaining === warningSeconds) {
-      beep(1000, 5000);
+      beep(1000, 10000);
     }
 
     if (phaseRemaining !== 0) return;
 
     (async () => {
       if (phaseRef.current === PHASES.PRE_ROUND) {
-        beep(500, 5000);
+        beep(10000, 15000);
         setPhase(PHASES.MATCH);
         setPhaseRemaining(matchMinutes * 60);
         return;
       }
 
       if (phaseRef.current === PHASES.MATCH) {
-        beep(1500, 10000);
+        beep(5000, 10000);
         setPhase(PHASES.TRANSITION);
         setPhaseRemaining(transitionSeconds);
         return;
